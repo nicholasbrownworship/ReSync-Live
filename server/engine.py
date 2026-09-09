@@ -8,10 +8,10 @@ STATUS: first draft, not yet run end-to-end.
 """
 import asyncio
 import logging
-import os
 import threading
 import time
 
+from config import Config
 from signaling.ws_server import serve
 from sfu.room import Room
 
@@ -26,12 +26,10 @@ class ResyncLiveEngine:
         self.room: Room | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
-        self._server_task = None
 
     def start(self):
         if self._thread is not None:
             return  # already running
-
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -39,22 +37,44 @@ class ResyncLiveEngine:
     def _run_loop(self):
         asyncio.set_event_loop(self._loop)
         session_id = time.strftime("%Y-%m-%d_%H%M%S")
-        self.room = Room(output_dir=self.output_dir, session_id=session_id)
+        self.room = Room(
+            output_dir=self.output_dir,
+            session_id=session_id,
+            ice_servers=Config.ice_servers(),
+        )
 
         async def on_connection(conn):
             identity = None
             try:
+                # Every guest gets the room's connection requirements
+                # up front, before they even request camera/mic access -
+                # so the join page can show a password prompt if needed
+                # and build its RTCPeerConnection with the right ICE
+                # servers, instead of guessing.
+                await conn.send_json({
+                    "type": "config",
+                    "ice_servers": Config.ice_servers(),
+                    "password_required": bool(Config.SESSION_PASSWORD),
+                })
+
                 while True:
                     msg = await conn.recv_json()
                     if msg is None:
                         break
                     msg_type = msg.get("type")
+
                     if msg_type == "offer" and identity is None:
+                        if Config.SESSION_PASSWORD and msg.get("password") != Config.SESSION_PASSWORD:
+                            await conn.send_json({"type": "error", "message": "Incorrect password."})
+                            break
                         identity = msg["identity"]
-                        answer = await self.room.handle_join(identity, conn, msg["sdp"])
+                        display_name = msg.get("display_name", identity)
+                        answer = await self.room.handle_join(identity, display_name, conn, msg["sdp"])
                         await conn.send_json({"type": "answer", "sdp": answer.sdp})
+
                     elif msg_type == "answer" and identity is not None:
                         await self.room.handle_renegotiation_answer(identity, msg["sdp"])
+
                     else:
                         logger.warning("Unexpected message type=%s identity=%s", msg_type, identity)
             finally:
@@ -75,14 +95,28 @@ class ResyncLiveEngine:
         self._thread = None
         self._loop = None
 
-    def connected_guests(self) -> list[str]:
-        """
-        NOTE: reads Room's dict from a different thread than the one
-        mutating it. Safe enough for a status display given Python's GIL
-        makes simple dict reads/writes atomic, but not a general-purpose
-        thread-safety guarantee - worth revisiting if this grows beyond
-        "show a count in the GUI".
-        """
+    def connected_guests(self) -> dict[str, dict]:
+        """Returns {identity: {display_name, muted}} - see the
+        thread-safety note in the previous version of this method;
+        unchanged reasoning applies to this richer version."""
         if self.room is None:
-            return []
-        return list(self.room.guests.keys())
+            return {}
+        return {
+            identity: {"display_name": g.display_name, "muted": g.muted}
+            for identity, g in self.room.guests.items()
+        }
+
+    def toggle_mute(self, identity: str):
+        if self.room is None or self._loop is None:
+            return
+        current = self.room.guests.get(identity)
+        if current is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.room.set_muted(identity, not current.muted), self._loop
+        )
+
+    def kick(self, identity: str):
+        if self.room is None or self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.room.remove_guest(identity), self._loop)

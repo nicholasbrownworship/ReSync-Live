@@ -11,27 +11,45 @@
   <meta charset="UTF-8" />
   <title>Join Session — ReSync Live</title>
   <style>
-    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding-top: 4rem; }
-    button { font-size: 1.2rem; padding: 0.75rem 2rem; cursor: pointer; }
+    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding-top: 3rem; }
+    input { font-size: 1rem; padding: 0.5rem; margin: 0.3rem; width: 240px; }
+    button { font-size: 1.2rem; padding: 0.75rem 2rem; cursor: pointer; margin-top: 0.5rem; }
     #status { margin-top: 1rem; color: #999; }
+    label { display: block; margin-top: 0.6rem; color: #aaa; font-size: 0.9rem; }
   </style>
 </head>
 <body>
   <h1>Join the session</h1>
+
+  <label for="serverInput">Host's address (they'll send you this)</label>
+  <input id="serverInput" placeholder="e.g. 123.45.67.89:8765" />
+
+  <label for="nameInput">Your name</label>
+  <input id="nameInput" placeholder="e.g. Josh" />
+
+  <label for="passwordInput">Password (if the host set one)</label>
+  <input id="passwordInput" type="password" />
+
+  <br />
   <button id="joinBtn">Join</button>
   <div id="status"></div>
   <div id="remoteVideos" style="display:flex; flex-wrap:wrap; justify-content:center; gap:1rem; margin-top:2rem;"></div>
 
   <script>
-    // TODO: make configurable rather than hardcoded once host/port is settled.
-    const SIGNALING_URL = "ws://localhost:8765";
-
     const statusEl = document.getElementById("status");
     const identity = "guest-" + Math.random().toString(36).slice(2, 8);
 
     document.getElementById("joinBtn").addEventListener("click", async () => {
-      statusEl.textContent = "Requesting camera/mic...";
+      const address = document.getElementById("serverInput").value.trim();
+      const displayName = document.getElementById("nameInput").value.trim() || identity;
+      const password = document.getElementById("passwordInput").value;
 
+      if (!address) {
+        statusEl.textContent = "Enter the host's address first.";
+        return;
+      }
+
+      statusEl.textContent = "Requesting camera/mic...";
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
@@ -40,64 +58,64 @@
         return;
       }
 
-      const pc = new RTCPeerConnection();
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      let pc; // created once we have ICE server config from the host
+      const ws = new WebSocket("ws://" + address);
 
-      // Display each remote guest's track as it arrives. NOTE: this
-      // groups purely by arrival order, not by which guest a track
-      // belongs to - the signaling protocol doesn't yet attach an
-      // identity to each track, so with more than 2 guests this will
-      // need that mapping added before it's actually usable.
-      pc.ontrack = (event) => {
-        const el = document.createElement(event.track.kind === "video" ? "video" : "audio");
-        el.autoplay = true;
-        el.style.width = "240px";
-        el.srcObject = event.streams[0];
-        document.getElementById("remoteVideos").appendChild(el);
-      };
-
-      const ws = new WebSocket(SIGNALING_URL);
-
-      ws.onopen = async () => {
-        statusEl.textContent = "Connecting...";
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        ws.send(JSON.stringify({
-          type: "offer",
-          identity: identity,
-          sdp: pc.localDescription.sdp,
-        }));
+      ws.onopen = () => {
+        statusEl.textContent = "Waiting for session details...";
       };
 
       ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
 
-        if (msg.type === "answer") {
-          // Response to OUR initial join offer.
+        if (msg.type === "config") {
+          // Sent immediately by the host once we connect - build our
+          // RTCPeerConnection using ITS TURN/STUN servers, then send
+          // our join offer including the password if one is set.
+          pc = new RTCPeerConnection({ iceServers: msg.ice_servers || [] });
+          stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+          // NOTE: still grouping remote tracks by arrival order, not by
+          // which guest they belong to - fine for a 2-guest test, needs
+          // real identity-tagging before use with 3+ guests.
+          pc.ontrack = (trackEvent) => {
+            const el = document.createElement(trackEvent.track.kind === "video" ? "video" : "audio");
+            el.autoplay = true;
+            el.style.width = "240px";
+            el.srcObject = trackEvent.streams[0];
+            document.getElementById("remoteVideos").appendChild(el);
+          };
+
+          statusEl.textContent = "Connecting...";
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({
+            type: "offer",
+            identity: identity,
+            display_name: displayName,
+            password: password,
+            sdp: pc.localDescription.sdp,
+          }));
+
+        } else if (msg.type === "answer") {
           await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
-          statusEl.textContent = "Connected as " + identity;
+          statusEl.textContent = "Connected as " + displayName;
 
         } else if (msg.type === "offer") {
-          // The SERVER is renegotiating (another guest started
-          // publishing audio/video and needs to reach us). Respond
-          // with a fresh answer - do not send a new offer of our own.
+          // Server-initiated renegotiation (another guest started
+          // publishing) - respond with a fresh answer only.
           await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          ws.send(JSON.stringify({
-            type: "answer",
-            sdp: pc.localDescription.sdp,
-          }));
+          ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));
+
+        } else if (msg.type === "error") {
+          statusEl.textContent = "Error: " + msg.message;
         }
       };
 
-      ws.onerror = () => {
-        statusEl.textContent = "Signaling connection failed.";
-      };
-
-      ws.onclose = () => {
-        statusEl.textContent = "Disconnected.";
-      };
+      ws.onerror = () => { statusEl.textContent = "Signaling connection failed."; };
+      ws.onclose = () => { statusEl.textContent = "Disconnected."; };
     });
   </script>
 </body>

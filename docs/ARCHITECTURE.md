@@ -200,10 +200,41 @@ it'll package cleanly on the first attempt. Treat "does this actually
 produce a working .exe" as its own early validation step (see
 docs/BUILD.md), not an assumption baked into the plan.
 
-- Room auth model: password? expiring links? waiting room vs. instant join?
+## Features added post-scaffolding (this session, untested)
+
+- **ICE/TURN wiring (real gap, now fixed in code):** previously neither
+  the server's nor the guest's `RTCPeerConnection` was configured with
+  any STUN/TURN servers at all, which would have meant connections only
+  worked on very permissive networks. Both sides now pull ICE server
+  config from `config.py` (pointed at the self-hosted coturn instance),
+  with the guest page receiving it from the server via a `config`
+  message pushed immediately on connect, rather than hardcoding it into
+  the static HTML file.
+- **Session password:** since this is reachable from the open internet
+  once port-forwarded, `handle_join` now rejects an offer if
+  `Config.SESSION_PASSWORD` is set and doesn't match. Settable from the
+  desktop app's password field, applied at session start. This resolves
+  the "room auth model" open question below with the simplest option
+  (shared password, no expiry/waiting-room) — good enough for a small
+  stable guest roster, revisit if the roster grows.
+- **Display names:** guests type a name on the join page instead of
+  being identified only by an auto-generated `guest-xxxxx` string —
+  shown in the host app's guest list and used for recording filenames.
+- **Host mute/kick controls** (from the original MVP host-controls
+  list): kick fully disconnects a guest (`Room.remove_guest`, already
+  existed). Mute is new and works differently on purpose — it only
+  affects what OTHER guests hear live (via a `MutableAudioTrack` wrapper
+  that swaps in silence when muted), NOT the recording, which keeps
+  capturing the guest's real audio regardless. Implemented for audio
+  only; video mute wasn't attempted (guests can already disable their
+  own camera per the earlier "camera optional per-guest" decision).
+
+## Open questions (not yet resolved)
+
 - Reconnect behavior: does a guest's mid-session drop need to produce one
   continuous file, or is a second file segment on reconnect acceptable?
 - Exact output file naming/folder convention for the ReSync handoff.
-- Host app UI approach — thin local web UI vs. small desktop shell.
 - coturn install/config specifics on the host machine (which OS, exact
   port/range choices) — not yet worked out.
+- Track-to-identity mapping on the guest page's remote video display —
+  still grouping by arrival order, fine for 2 guests, not fine for 3+.
