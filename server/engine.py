@@ -26,6 +26,7 @@ class ResyncLiveEngine:
         self.room: Room | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
+        self._server_task: asyncio.Task | None = None
 
     def start(self):
         if self._thread is not None:
@@ -83,17 +84,27 @@ class ResyncLiveEngine:
                 await conn.close()
 
         try:
-            self._loop.run_until_complete(serve(self.host, self.port, on_connection))
+            self._server_task = self._loop.create_task(serve(self.host, self.port, on_connection))
+            self._loop.run_forever()
         except Exception:
             logger.exception("Engine loop exited")
 
     def stop(self):
         if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._server_task is not None:
+                # Wait for the task to actually finish cancelling before
+                # stopping the loop, so it doesn't get torn down mid-flight
+                # (which asyncio logs as a "Task was destroyed" warning -
+                # harmless, but noisy, and easy to avoid properly).
+                self._server_task.add_done_callback(lambda _: self._loop.stop())
+                self._loop.call_soon_threadsafe(self._server_task.cancel)
+            else:
+                self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=5)
         self._thread = None
         self._loop = None
+        self._server_task = None
 
     def connected_guests(self) -> dict[str, dict]:
         """Returns {identity: {display_name, muted}} - see the
