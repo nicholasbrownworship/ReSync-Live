@@ -1,10 +1,16 @@
 <!DOCTYPE html>
 <!--
   ReSync Live guest join page. No CDN, no third-party JS library - uses
-  only the browser's native RTCPeerConnection and WebSocket APIs, talking
-  to our own hand-written signaling server (signaling/ws_server.py).
+  only the browser's native RTCPeerConnection, WebSocket, and Web Audio
+  APIs, talking to our own hand-written signaling server.
 
-  STATUS: first draft, not yet tested end-to-end.
+  STATUS: core join/renegotiation flow verified against a simulated
+  (aiortc) client - see docs/ARCHITECTURE.md. The track-identity mapping
+  and per-guest volume sliders below rely on RTCTrackEvent.transceiver.mid,
+  which is part of the WebRTC spec, but has ONLY been checked for
+  consistency between two aiortc peers in a sandbox - never against a
+  real browser. If a guest's slider doesn't show up or shows up
+  unlabeled, that's the first thing to suspect.
 -->
 <html lang="en">
 <head>
@@ -16,6 +22,11 @@
     button { font-size: 1.2rem; padding: 0.75rem 2rem; cursor: pointer; margin-top: 0.5rem; }
     #status { margin-top: 1rem; color: #999; }
     label { display: block; margin-top: 0.6rem; color: #aaa; font-size: 0.9rem; }
+    #remoteGuests { display: flex; flex-wrap: wrap; justify-content: center; gap: 1.2rem; margin-top: 2rem; }
+    .guest-tile { background: #1a1a1a; border-radius: 8px; padding: 0.75rem; width: 220px; }
+    .guest-tile video { width: 100%; border-radius: 4px; background: #000; }
+    .guest-tile .name { margin-top: 0.4rem; font-weight: bold; }
+    .guest-tile input[type="range"] { width: 100%; margin: 0.3rem 0; }
   </style>
 </head>
 <body>
@@ -23,16 +34,6 @@
 
   <label for="serverInput">Host's address (they'll send you this)</label>
   <input id="serverInput" placeholder="e.g. 123.45.67.89:8765" />
-  <script>
-    // If this page was loaded directly from the host's app (the normal
-    // case now), default to that same address instead of making the
-    // guest re-type what they just used to get here.
-    document.addEventListener("DOMContentLoaded", () => {
-      if (window.location.host) {
-        document.getElementById("serverInput").value = window.location.host;
-      }
-    });
-  </script>
 
   <label for="nameInput">Your name</label>
   <input id="nameInput" placeholder="e.g. Josh" />
@@ -43,11 +44,94 @@
   <br />
   <button id="joinBtn">Join</button>
   <div id="status"></div>
-  <div id="remoteVideos" style="display:flex; flex-wrap:wrap; justify-content:center; gap:1rem; margin-top:2rem;"></div>
+  <div id="remoteGuests"></div>
 
   <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      if (window.location.host) {
+        document.getElementById("serverInput").value = window.location.host;
+      }
+    });
+
     const statusEl = document.getElementById("status");
+    const remoteGuestsEl = document.getElementById("remoteGuests");
     const identity = "guest-" + Math.random().toString(36).slice(2, 8);
+
+    // mid -> {identity, display_name, kind}, filled in from "track_info"
+    // messages the server sends after every (re)negotiation.
+    const trackInfoByMid = {};
+    // Tracks that arrived before we knew whose they were yet.
+    const pendingTracksByMid = {};
+    // identity -> {tile, videoEl, gainNode}
+    const guestTiles = {};
+
+    let audioCtx; // created on Join click (a user gesture), required by browsers
+
+    function getOrCreateTile(identity, displayName) {
+      if (guestTiles[identity]) return guestTiles[identity];
+
+      const tile = document.createElement("div");
+      tile.className = "guest-tile";
+
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.muted = true; // we play this guest's audio via Web Audio below, not the element itself
+      tile.appendChild(video);
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "name";
+      nameEl.textContent = displayName;
+      tile.appendChild(nameEl);
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "0";
+      slider.max = "200";
+      slider.value = "100";
+      slider.title = "Your local volume for " + displayName + " (only affects what YOU hear)";
+      tile.appendChild(slider);
+
+      remoteGuestsEl.appendChild(tile);
+
+      const entry = { tile, videoEl: video, slider, gainNode: null };
+      guestTiles[identity] = entry;
+      return entry;
+    }
+
+    function renderTrack(mid, trackEvent) {
+      const info = trackInfoByMid[mid];
+      if (!info) {
+        pendingTracksByMid[mid] = trackEvent;
+        return;
+      }
+      const tile = getOrCreateTile(info.identity, info.display_name);
+
+      if (info.kind === "video") {
+        tile.videoEl.srcObject = trackEvent.streams[0];
+      } else {
+        // Route this guest's audio through our own GainNode instead of
+        // an <audio> element, so the slider only changes what WE hear -
+        // no effect on the recording or on any other guest.
+        const audioOnlyStream = new MediaStream([trackEvent.track]);
+        const source = audioCtx.createMediaStreamSource(audioOnlyStream);
+        const gainNode = audioCtx.createGain();
+        source.connect(gainNode).connect(audioCtx.destination);
+        tile.gainNode = gainNode;
+        tile.slider.addEventListener("input", () => {
+          gainNode.gain.value = tile.slider.value / 100;
+        });
+      }
+    }
+
+    function handleTrackInfo(msg) {
+      for (const [mid, info] of Object.entries(msg.tracks)) {
+        trackInfoByMid[mid] = info;
+        if (pendingTracksByMid[mid]) {
+          renderTrack(mid, pendingTracksByMid[mid]);
+          delete pendingTracksByMid[mid];
+        }
+      }
+    }
 
     document.getElementById("joinBtn").addEventListener("click", async () => {
       const address = document.getElementById("serverInput").value.trim();
@@ -59,6 +143,8 @@
         return;
       }
 
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
       statusEl.textContent = "Requesting camera/mic...";
       let stream;
       try {
@@ -68,43 +154,33 @@
         return;
       }
 
-      let pc; // created once we have ICE server config from the host
+      let pc;
       const ws = new WebSocket("ws://" + address);
 
-      ws.onopen = () => {
-        statusEl.textContent = "Waiting for session details...";
-      };
+      ws.onopen = () => { statusEl.textContent = "Waiting for session details..."; };
 
       ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
 
         if (msg.type === "config") {
-          // Sent immediately by the host once we connect - build our
-          // RTCPeerConnection using ITS TURN/STUN servers, then send
-          // our join offer including the password if one is set.
           pc = new RTCPeerConnection({ iceServers: msg.ice_servers || [] });
           stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-          // NOTE: still grouping remote tracks by arrival order, not by
-          // which guest they belong to - fine for a 2-guest test, needs
-          // real identity-tagging before use with 3+ guests.
           pc.ontrack = (trackEvent) => {
-            const el = document.createElement(trackEvent.track.kind === "video" ? "video" : "audio");
-            el.autoplay = true;
-            el.style.width = "240px";
-            el.srcObject = trackEvent.streams[0];
-            document.getElementById("remoteVideos").appendChild(el);
+            const mid = trackEvent.transceiver ? trackEvent.transceiver.mid : null;
+            if (mid === null) {
+              console.warn("No transceiver.mid on incoming track - cannot identify whose it is.");
+              return;
+            }
+            renderTrack(mid, trackEvent);
           };
 
           statusEl.textContent = "Connecting...";
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           ws.send(JSON.stringify({
-            type: "offer",
-            identity: identity,
-            display_name: displayName,
-            password: password,
-            sdp: pc.localDescription.sdp,
+            type: "offer", identity: identity, display_name: displayName,
+            password: password, sdp: pc.localDescription.sdp,
           }));
 
         } else if (msg.type === "answer") {
@@ -112,12 +188,13 @@
           statusEl.textContent = "Connected as " + displayName;
 
         } else if (msg.type === "offer") {
-          // Server-initiated renegotiation (another guest started
-          // publishing) - respond with a fresh answer only.
           await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));
+
+        } else if (msg.type === "track_info") {
+          handleTrackInfo(msg);
 
         } else if (msg.type === "error") {
           statusEl.textContent = "Error: " + msg.message;

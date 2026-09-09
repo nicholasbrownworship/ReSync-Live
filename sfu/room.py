@@ -6,16 +6,18 @@ aiortc's MediaRelay to fan each guest's track out to every other guest,
 and handles renegotiation when a guest's track needs to reach someone
 who already connected earlier.
 
-STATUS: first draft, not yet run end-to-end. This is the highest-risk,
-least-proven part of the self-built stack.
+STATUS: core join/renegotiation/recording flow verified via simulated
+guests (see docs/ARCHITECTURE.md). Gain control and track-identity
+mapping (added this session) are NOT yet verified against a real
+browser - only the server-side logic and mid-consistency were checked
+against a second aiortc-based simulated client, not a real one.
 
 Known, deliberate simplification (not yet a solved problem): renegotiation
 is only serialized per-target-guest via a lock, to stop two overlapping
 offers landing on the same peer connection when a new guest's audio and
 video tracks both arrive within milliseconds of each other. It does NOT
-implement full "perfect negotiation" (polite/impolite peer roles, offer
-rollback on glare) - not needed today because only the server ever
-initiates renegotiation, never the guest.
+implement full "perfect negotiation" - not needed today because only
+the server ever initiates renegotiation, never the guest.
 """
 import asyncio
 import logging
@@ -29,33 +31,40 @@ from recorder.session_recorder import SessionRecorder
 logger = logging.getLogger("resync_live.sfu")
 
 
-class MutableAudioTrack(MediaStreamTrack):
+class GainAdjustableAudioTrack(MediaStreamTrack):
     """
-    Wraps a relayed audio track so the HOST can mute a guest in the live
-    mix (what other guests hear) without touching their recording and
-    without needing to renegotiate the connection to add/remove a track.
-    Muted frames are replaced with silence of the same shape, rather
-    than the original audio - the receiving end still gets a continuous
-    stream, just silent.
+    Wraps a guest's RAW incoming audio track with an adjustable gain
+    factor, applied ONCE at the source - both the recorder and every
+    relay to other guests read from this SAME wrapped track, so a gain
+    change affects what's recorded AND what everyone else hears,
+    identically. This is deliberately different from a live-only mute:
+    the point is to prevent clipping/peaking from ever being captured
+    in the first place, not just to control the live monitor mix.
 
-    STATUS: first draft, not yet run. Constructing a correctly-shaped
-    silent AudioFrame (matching format/layout/sample count) from
-    scratch, per-frame, is the part most likely to need adjustment once
-    this runs against real audio.
+    STATUS: first draft. Multiplying raw PCM samples in-place via numpy
+    on each frame's plane data is the part most likely to need
+    adjustment once run against real audio (sample format assumptions:
+    16-bit signed integer PCM, which is what aiortc/WebRTC audio uses,
+    but not independently re-verified here).
     """
     kind = "audio"
 
     def __init__(self, source_track: MediaStreamTrack):
         super().__init__()
         self.source_track = source_track
-        self.muted = False
+        self.gain = 1.0  # 1.0 = unchanged, 0.0 = silent, >1.0 = boosted
 
     async def recv(self):
         frame = await self.source_track.recv()
-        if not self.muted:
+        if self.gain == 1.0:
             return frame
+
+        import numpy as np
+
         for plane in frame.planes:
-            plane.update(bytes(len(plane)))
+            samples = np.frombuffer(bytes(plane), dtype=np.int16).astype(np.float32)
+            samples = np.clip(samples * self.gain, -32768, 32767).astype(np.int16)
+            plane.update(samples.tobytes())
         return frame
 
 
@@ -65,10 +74,15 @@ class GuestState:
         self.display_name = display_name
         self.pc = pc
         self.conn = conn  # WebSocketConnection - needed to PUSH renegotiation offers
-        self.published_tracks: dict[str, object] = {}  # "audio"/"video" -> track
-        self.mute_wrappers: list[MutableAudioTrack] = []  # audio tracks THIS guest sends to others
+        self.published_tracks: dict[str, object] = {}  # "audio"/"video" -> (possibly wrapped) track
+        self.audio_gain_track: GainAdjustableAudioTrack | None = None
         self.answer_ready = asyncio.Event()
-        self.muted = False
+        # Per-consumer bookkeeping (on the OTHER guests' peer connections
+        # this guest's tracks were added to): maps the specific relayed
+        # track object -> (identity, display_name, kind) so we can look
+        # up, after renegotiation, which guest a given transceiver/mid
+        # actually carries. Populated in _add_relayed_track.
+        self.track_owners: dict[object, tuple[str, str, str]] = {}
 
 
 class Room:
@@ -95,6 +109,36 @@ class Room:
             self._renegotiation_locks[identity] = asyncio.Lock()
         return self._renegotiation_locks[identity]
 
+    def _add_relayed_track(self, target: GuestState, source: GuestState, kind: str):
+        """
+        Adds `source`'s track (audio goes through source's shared gain
+        wrapper first) to `target`'s peer connection, and records which
+        source guest it came from so we can later tell `target`'s
+        browser which of its incoming tracks is whose.
+        """
+        published = source.published_tracks[kind]
+        relayed = self.relay.subscribe(published)
+        target.pc.addTrack(relayed)
+        target.track_owners[relayed] = (source.identity, source.display_name, kind)
+        return relayed
+
+    async def _send_track_info(self, guest: GuestState):
+        """
+        Sends the guest's browser a mapping of {mid: {identity,
+        display_name, kind}} for every track currently on their peer
+        connection - the browser reads a track's mid from
+        RTCTrackEvent.transceiver.mid to know whose audio/video it just
+        received. Safe to call repeatedly (e.g. after every
+        renegotiation); the client just overwrites its lookup table.
+        """
+        info = {}
+        for t in guest.pc.getTransceivers():
+            if t.sender and t.sender.track in guest.track_owners:
+                identity, display_name, kind = guest.track_owners[t.sender.track]
+                info[t.mid] = {"identity": identity, "display_name": display_name, "kind": kind}
+        if info:
+            await guest.conn.send_json({"type": "track_info", "tracks": info})
+
     async def handle_join(
         self, identity: str, display_name: str, conn, sdp: str
     ) -> RTCSessionDescription:
@@ -107,9 +151,15 @@ class Room:
         @pc.on("track")
         async def on_track(track):
             logger.info("Received %s track from %s (%s)", track.kind, identity, display_name)
-            guest.published_tracks[track.kind] = track
-            await self.recorder.add_track(identity, track, self.relay)
-            await self._forward_to_others(identity, track)
+            if track.kind == "audio":
+                gain_track = GainAdjustableAudioTrack(track)
+                guest.audio_gain_track = gain_track
+                guest.published_tracks["audio"] = gain_track
+                await self.recorder.add_track(identity, gain_track, self.relay)
+            else:
+                guest.published_tracks["video"] = track
+                await self.recorder.add_track(identity, track, self.relay)
+            await self._forward_to_others(identity)
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -124,38 +174,36 @@ class Room:
         for other_identity, other in self.guests.items():
             if other_identity == identity:
                 continue
-            for kind, track in other.published_tracks.items():
-                relayed = self.relay.subscribe(track)
-                if kind == "audio":
-                    wrapper = MutableAudioTrack(relayed)
-                    wrapper.muted = other.muted
-                    other.mute_wrappers.append(wrapper)
-                    pc.addTrack(wrapper)
-                else:
-                    pc.addTrack(relayed)
+            for kind in other.published_tracks:
+                self._add_relayed_track(target=guest, source=other, kind=kind)
 
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
+        await self._send_track_info(guest)
         return pc.localDescription
 
-    async def _forward_to_others(self, source_identity: str, track):
-        """A guest just started publishing a track. Every other already-
-        connected guest's PC needs it added, then renegotiated. Audio
-        tracks go through a MutableAudioTrack so the host can mute this
-        guest later without renegotiating again."""
+    async def _forward_to_others(self, source_identity: str):
+        """A guest just started publishing a track (or its second track
+        - audio/video arrive as separate events). Every other already-
+        connected guest's PC needs whichever of source's tracks it
+        doesn't have yet, then renegotiation."""
         source = self.guests[source_identity]
         for other_identity, other in self.guests.items():
             if other_identity == source_identity:
                 continue
-            relayed = self.relay.subscribe(track)
-            if track.kind == "audio":
-                wrapper = MutableAudioTrack(relayed)
-                wrapper.muted = source.muted
-                source.mute_wrappers.append(wrapper)
-                other.pc.addTrack(wrapper)
-            else:
-                other.pc.addTrack(relayed)
-            await self._renegotiate(other)
+            added_any = False
+            for kind in source.published_tracks:
+                track_obj = source.published_tracks[kind]
+                already_has = any(
+                    owner == (source_identity, source.display_name, kind)
+                    for owner in other.track_owners.values()
+                )
+                if not already_has:
+                    self._add_relayed_track(target=other, source=source, kind=kind)
+                    added_any = True
+            if added_any:
+                await self._renegotiate(other)
+                await self._send_track_info(other)
 
     async def _renegotiate(self, guest: GuestState):
         """Pushes a fresh offer to an already-connected guest and waits
@@ -178,16 +226,18 @@ class Room:
         await guest.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
         guest.answer_ready.set()
 
-    async def set_muted(self, identity: str, muted: bool):
-        """Host-initiated mute: affects what OTHER guests hear, not the
-        recording, which keeps capturing this guest's real audio."""
+    async def set_gain(self, identity: str, gain: float):
+        """
+        Host-initiated gain adjustment for one guest's audio - affects
+        BOTH the recording and what every other guest hears, since both
+        read from the same GainAdjustableAudioTrack. gain=0.0 is
+        equivalent to the old mute; gain=1.0 is unchanged.
+        """
         guest = self.guests.get(identity)
-        if guest is None:
+        if guest is None or guest.audio_gain_track is None:
             return
-        guest.muted = muted
-        for wrapper in guest.mute_wrappers:
-            wrapper.muted = muted
-        logger.info("%s %s", identity, "muted" if muted else "unmuted")
+        guest.audio_gain_track.gain = max(0.0, gain)
+        logger.info("%s gain set to %.2f", identity, gain)
 
     async def remove_guest(self, identity: str):
         guest = self.guests.pop(identity, None)

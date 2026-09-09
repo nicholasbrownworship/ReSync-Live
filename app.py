@@ -117,19 +117,24 @@ class App:
             if identity not in self.guest_rows:
                 row = tk.Frame(self.guests_frame)
                 row.pack(fill="x", pady=2)
-                name_label = tk.Label(row, text=info["display_name"], width=18, anchor="w")
+                name_label = tk.Label(row, text=info["display_name"], width=14, anchor="w")
                 name_label.pack(side="left")
-                mute_btn = tk.Button(row, text="Mute", width=8,
-                                      command=lambda i=identity: self.engine.toggle_mute(i))
-                mute_btn.pack(side="left", padx=4)
-                kick_btn = tk.Button(row, text="Kick", width=8, fg="red",
+
+                # Gain slider: 0-200%, affects BOTH the recording and
+                # what other guests hear (see sfu/room.py GainAdjustableAudioTrack)
+                # - not just a live-only mute.
+                var = tk.DoubleVar(value=info["gain"] * 100)
+                slider = tk.Scale(
+                    row, from_=0, to=200, orient="horizontal", length=140,
+                    variable=var, showvalue=True, resolution=5,
+                    command=lambda val, i=identity: self.engine.set_gain(i, float(val) / 100.0),
+                )
+                slider.pack(side="left", padx=4)
+
+                kick_btn = tk.Button(row, text="Kick", width=6, fg="red",
                                       command=lambda i=identity: self.engine.kick(i))
                 kick_btn.pack(side="left", padx=4)
-                self.guest_rows[identity] = {"frame": row, "mute_btn": mute_btn}
-
-            self.guest_rows[identity]["mute_btn"].config(
-                text="Unmute" if info["muted"] else "Mute"
-            )
+                self.guest_rows[identity] = {"frame": row, "slider": slider, "var": var}
 
     def _poll_status(self):
         if self.running:

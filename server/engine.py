@@ -119,25 +119,22 @@ class ResyncLiveEngine:
         self._server_task = None
 
     def connected_guests(self) -> dict[str, dict]:
-        """Returns {identity: {display_name, muted}} - see the
-        thread-safety note in the previous version of this method;
-        unchanged reasoning applies to this richer version."""
+        """Returns {identity: {display_name, gain}} - see the
+        thread-safety note above; unchanged reasoning applies here."""
         if self.room is None:
             return {}
         return {
-            identity: {"display_name": g.display_name, "muted": g.muted}
+            identity: {
+                "display_name": g.display_name,
+                "gain": g.audio_gain_track.gain if g.audio_gain_track else 1.0,
+            }
             for identity, g in self.room.guests.items()
         }
 
-    def toggle_mute(self, identity: str):
+    def set_gain(self, identity: str, gain: float):
         if self.room is None or self._loop is None:
             return
-        current = self.room.guests.get(identity)
-        if current is None:
-            return
-        asyncio.run_coroutine_threadsafe(
-            self.room.set_muted(identity, not current.muted), self._loop
-        )
+        asyncio.run_coroutine_threadsafe(self.room.set_gain(identity, gain), self._loop)
 
     def kick(self, identity: str):
         if self.room is None or self._loop is None:

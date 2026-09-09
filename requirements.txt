@@ -3,6 +3,11 @@
 # against Python's standard library only (see signaling/ws_server.py).
 aiortc>=1.9.0
 
+# Used for per-guest audio gain adjustment (sfu/room.py). Almost
+# certainly already present as an aiortc transitive dependency, but
+# listed explicitly since we import it directly ourselves.
+numpy>=1.24.0
+
 # GUI is Tkinter, which ships with Python itself - no entry needed here.
 
 # Packaging the desktop app into a standalone .exe (build-time only,
