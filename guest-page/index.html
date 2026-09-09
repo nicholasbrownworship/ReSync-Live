@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!--
+  ReSync Live guest join page.
+
+  STATUS: first-draft skeleton, not yet tested end-to-end. Uses LiveKit's
+  JS client SDK from a CDN. Before relying on this, verify:
+    - the current recommended CDN URL/version for livekit-client
+    - token generation (currently a placeholder - needs a real endpoint or
+      manual token paste for early testing)
+
+  Guests need no install: open this page, click Join, allow camera/mic.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Join Session — ReSync Live</title>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding-top: 4rem; }
+    button { font-size: 1.2rem; padding: 0.75rem 2rem; cursor: pointer; }
+    video { width: 320px; margin: 1rem; border-radius: 8px; background: #000; }
+    #status { margin-top: 1rem; color: #999; }
+  </style>
+</head>
+<body>
+  <h1>Join the session</h1>
+  <button id="joinBtn">Join</button>
+  <div id="status"></div>
+  <div id="videos"></div>
+
+  <script>
+    // TODO: replace with real values once room/token issuance is wired up.
+    // For early testing, generate a token manually (e.g. via `lk token
+    // create` or the LiveKit Cloud dashboard) and paste it here.
+    const LIVEKIT_URL = "wss://your-project.livekit.cloud";
+    const PLACEHOLDER_TOKEN = "";
+
+    const statusEl = document.getElementById("status");
+    const videosEl = document.getElementById("videos");
+
+    document.getElementById("joinBtn").addEventListener("click", async () => {
+      if (!PLACEHOLDER_TOKEN) {
+        statusEl.textContent = "No token configured yet - see comment in this file.";
+        return;
+      }
+
+      const room = new LivekitClient.Room();
+
+      room.on(LivekitClient.RoomEvent.Disconnected, () => {
+        statusEl.textContent = "Disconnected.";
+      });
+
+      try {
+        statusEl.textContent = "Connecting...";
+        await room.connect(LIVEKIT_URL, PLACEHOLDER_TOKEN);
+        await room.localParticipant.setCameraEnabled(true);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        statusEl.textContent = "Connected as " + room.localParticipant.identity;
+      } catch (err) {
+        statusEl.textContent = "Failed to connect: " + err.message;
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>

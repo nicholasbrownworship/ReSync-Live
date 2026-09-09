@@ -1,0 +1,8 @@
+# LiveKit Python realtime SDK - room connection, track subscription
+livekit>=1.0.0
+
+# PyAV (FFmpeg bindings) - encoding/muxing raw frames to files
+av>=13.0.0
+
+# For generating guest/host access tokens
+livekit-api>=1.0.0
