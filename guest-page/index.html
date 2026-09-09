@@ -23,6 +23,16 @@
 
   <label for="serverInput">Host's address (they'll send you this)</label>
   <input id="serverInput" placeholder="e.g. 123.45.67.89:8765" />
+  <script>
+    // If this page was loaded directly from the host's app (the normal
+    // case now), default to that same address instead of making the
+    // guest re-type what they just used to get here.
+    document.addEventListener("DOMContentLoaded", () => {
+      if (window.location.host) {
+        document.getElementById("serverInput").value = window.location.host;
+      }
+    });
+  </script>
 
   <label for="nameInput">Your name</label>
   <input id="nameInput" placeholder="e.g. Josh" />

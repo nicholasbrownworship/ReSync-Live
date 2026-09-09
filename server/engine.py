@@ -8,6 +8,7 @@ STATUS: first draft, not yet run end-to-end.
 """
 import asyncio
 import logging
+import os
 import threading
 import time
 
@@ -16,6 +17,8 @@ from signaling.ws_server import serve
 from sfu.room import Room
 
 logger = logging.getLogger("resync_live.engine")
+
+GUEST_PAGE_PATH = os.path.join(os.path.dirname(__file__), "..", "guest-page", "index.html")
 
 
 class ResyncLiveEngine:
@@ -84,7 +87,16 @@ class ResyncLiveEngine:
                 await conn.close()
 
         try:
-            self._server_task = self._loop.create_task(serve(self.host, self.port, on_connection))
+            with open(GUEST_PAGE_PATH, "r", encoding="utf-8") as f:
+                guest_page_html = f.read()
+        except OSError:
+            logger.exception("Could not read guest page at %s", GUEST_PAGE_PATH)
+            guest_page_html = ""
+
+        try:
+            self._server_task = self._loop.create_task(
+                serve(self.host, self.port, on_connection, static_html=guest_page_html)
+            )
             self._loop.run_forever()
         except Exception:
             logger.exception("Engine loop exited")

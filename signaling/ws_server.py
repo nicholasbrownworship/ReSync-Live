@@ -98,8 +98,17 @@ class WebSocketConnection:
                 pass
 
 
-async def _handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
-    """Reads the HTTP upgrade request and writes the 101 response."""
+async def _handshake(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, static_html: str = ""
+) -> bool:
+    """
+    Reads the HTTP request line/headers. If it's a WebSocket upgrade,
+    completes the 101 handshake and returns True (signaling proceeds).
+    If it's a plain GET (a guest's browser just navigating to the
+    address), serves `static_html` directly on the SAME port instead -
+    this is how a guest actually reaches the join page: one address,
+    one port, no separate file to be sent.
+    """
     request_line = await reader.readline()
     if not request_line:
         return False
@@ -112,9 +121,23 @@ async def _handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
         key, _, value = line.decode("latin-1").partition(":")
         headers[key.strip().lower()] = value.strip()
 
+    is_upgrade = headers.get("upgrade", "").lower() == "websocket"
     ws_key = headers.get("sec-websocket-key")
-    if not ws_key or headers.get("upgrade", "").lower() != "websocket":
-        writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+
+    if not is_upgrade or not ws_key:
+        # Plain HTTP request - a browser loading the page, not our own
+        # signaling JS opening a WebSocket. Serve the guest page.
+        if static_html:
+            body = static_html.encode("utf-8")
+            response = (
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html; charset=utf-8\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("utf-8") + body
+            writer.write(response)
+        else:
+            writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
         await writer.drain()
         return False
 
@@ -133,16 +156,18 @@ async def _handshake(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
     return True
 
 
-async def serve(host: str, port: int, on_connection):
+async def serve(host: str, port: int, on_connection, static_html: str = ""):
     """
-    Starts the signaling server. `on_connection` is an async callable
-    invoked with a WebSocketConnection for each client that completes
-    the handshake.
+    Starts the server. `on_connection` is an async callable invoked with
+    a WebSocketConnection for each client that completes the WS
+    handshake. `static_html`, if given, is served as-is to any plain
+    (non-WebSocket) HTTP request on this same port - this is how guests
+    load the join page: they visit http://<host>:<port>/ directly.
     """
 
     async def handle(reader, writer):
         try:
-            if await _handshake(reader, writer):
+            if await _handshake(reader, writer, static_html):
                 conn = WebSocketConnection(reader, writer)
                 await on_connection(conn)
         except (asyncio.IncompleteReadError, ConnectionResetError):
