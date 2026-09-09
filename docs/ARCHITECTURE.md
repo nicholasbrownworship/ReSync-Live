@@ -1,94 +1,101 @@
 # Architecture decisions
 
 This records the reasoning behind ReSync Live's design, so future sessions
-don't have to re-litigate it. Decisions here were made and verified against
-LiveKit's current docs as of Sept 2026 — re-check anything version-specific
-before relying on it long-term.
+don't have to re-litigate it. Verified against current docs as of Sept
+2026 where noted — re-check anything version-specific before relying on
+it long-term.
 
 ## Goal
 
-Remote guests join a room over the network. Each guest's audio+video is
-recorded to a separate, synced local file on the host's PC. Output feeds
-into ReSync the same way a local in-person recording does. Network use is
-the default/primary case (not a fallback for in-person).
+Remote guests join a session over the network, see/hear each other live
+(this is a real-time group call, not just a recording pipeline), and each
+guest's audio+video is recorded to a separate, synced local file. Network
+use is the default/primary case, not a fallback for in-person.
 
-## Why LiveKit
+## Core constraint: self-reliance
 
-Raw WebRTC requires building/maintaining signaling servers and TURN relay
-infrastructure — most of the real difficulty in VDO.Ninja/Riverside-style
-tools. LiveKit (open-source WebRTC infra, SFU + client SDKs) solves this,
-turning a multi-month networking project into an app-layer project.
+Explicit decision: **no dependency on any hosted third-party company or
+service**, even free/open-source-backed ones (e.g. LiveKit Cloud is out
+entirely — not because it's unreliable, but on principle). Within that:
 
-## Where the LiveKit server lives: LiveKit Cloud (hosted)
+- Things that are unsafe or unreasonable to hand-write (cryptography,
+  video/audio codecs) use existing, vetted open-source software that runs
+  entirely on hardware we own. Writing your own DTLS/SRTP or your own
+  H.264/Opus codec is multi-year specialist engineering with real security
+  risk if done imperfectly — not in scope, and not something even large
+  companies do in-house.
+- Things that ARE reasonably scoped to write ourselves (signaling, the
+  room/relay logic) are self-written, not pulled from a library.
+- TURN (NAT relay) is a judgment call in between: technically not
+  cryptography, but a large, security-sensitive protocol (RFC 5766).
+  **Decision: self-host the existing coturn software** rather than
+  hand-write a TURN server — same category of risk as hand-rolling
+  crypto, just for relay instead of encryption. This is still "no
+  company," just existing self-hosted software instead of self-written.
 
-Guests connect to LiveKit's infrastructure, not the host's home network.
-Avoids NAT/port-forwarding/upload-bandwidth-as-single-point-of-failure
-problems — the exact fragility that made the old VDO.Ninja setup unreliable.
-Self-hosting the LiveKit server was considered and rejected for the same
-reason: it reintroduces "my network is the bottleneck."
+## Rejected: LiveKit (both Cloud and self-hosted)
 
-## Recording: custom recording participant, NOT Egress
+LiveKit Cloud was the original plan (see git history / earlier docs) but
+was ruled out once the self-reliance requirement was made explicit — even
+self-hosting LiveKit's open-source server was rejected, because the goal
+isn't just "no company," it's building the actual relay/room logic
+ourselves rather than depending on someone else's SFU implementation,
+open source or not.
 
-Two paths exist for getting files out of a LiveKit room:
+## Chosen stack
 
-**Egress (rejected for this project).** LiveKit's built-in server-side
-recording feature. Verified via LiveKit docs: on LiveKit Cloud, Egress
-writes only to cloud storage (S3-compatible, Azure, GCP, or Ali OSS) or
-streams audio via WebSocket — there is no "write to a folder on the host's
-PC" option, because Egress workers run inside LiveKit's cloud
-infrastructure, not on the host's machine. Using Egress would mean
-recordings live in a cloud bucket (even if only transiently, then
-downloaded), which conflicts with the requirement that recordings never
-leave the host's own machine.
+- **WebRTC media engine: [aiortc](https://github.com/aiortc/aiortc)**
+  (Python, asyncio-based, open source). Verified via aiortc's own docs:
+  it implements ICE, DTLS key/handshake, SRTP encryption, and audio/video
+  codec handling (Opus, H.264, VP8) using existing, tested implementations
+  under the hood — this is the "existing crypto/codec software" boundary
+  from the self-reliance decision. It is a library we run ourselves, not
+  a hosted service.
+- **Signaling: self-written**, using only Python's standard library (raw
+  sockets implementing the WebSocket handshake/framing per RFC 6455) —
+  no signaling framework or library. This is genuinely a scoped, writable
+  piece: it's just message-passing (SDP offers/answers, ICE candidates,
+  room membership) between browsers and our server.
+- **Room/relay ("SFU") logic: self-written**, built on top of aiortc's
+  primitives. aiortc provides `MediaRelay` (fans one incoming track out to
+  multiple consumers — confirmed via aiortc's docs/changelog, this exists
+  specifically for this use case) and `MediaRecorder` (writes a track to a
+  file via PyAV, confirmed via aiortc's API docs). We use both directly
+  rather than re-implementing frame-by-frame encoding ourselves — that
+  logic already exists inside aiortc and re-writing it would just be
+  redundant risk, not "more self-reliant."
+- **TURN/STUN: self-hosted coturn.**
+- **Guest client: plain browser JavaScript**, using the browser's native
+  `RTCPeerConnection` and `WebSocket` APIs directly — no CDN library, no
+  livekit-client or similar. Browsers implement WebRTC natively; this
+  isn't a third-party dependency in the sense we're avoiding, it's a web
+  platform standard.
 
-**Custom recording participant (chosen).** The host app connects to the
-room as a normal participant that publishes nothing and only subscribes.
-Verified via LiveKit's Python `rtc` SDK docs: subscribing to a remote
-track yields a stream of already-decoded frames — `VideoFrameEvent`
-(carries `frame` + `timestamp_us`) for video, and equivalent timestamped
-frames for audio. The app takes these raw frames and encodes/muxes them
-to files itself (via PyAV, which wraps FFmpeg) — effectively doing the
-same job Egress would have done, just locally and under our control.
+## Known, accepted risk: aiortc's concurrency ceiling
 
-Tradeoff acknowledged: this is meaningfully more engineering than Egress
-(Egress does encoding/muxing for you; here we build that ourselves), but
-it's the only path that keeps recordings 100% local with LiveKit Cloud
-used purely as a relay.
+Verified: aiortc is pure Python running on a single asyncio event loop
+(subject to the GIL). Sources are consistent that it's well-suited to a
+small number of peers but that Python's overhead becomes a real
+bottleneck as fan-out increases — and there's a documented history of
+frame-rate degradation under multiple simultaneous video clients.
 
-One thing this SDK does NOT give you: `AVSynchronizer` in the Python SDK
-is for the *outgoing/publishing* direction (e.g. syncing generated audio
-with generated video when your app is the one speaking into a room) — it
-is not a tool for syncing *incoming* subscribed tracks. For recording,
-sync comes from using each frame's own timestamp directly.
+This matters here specifically because an SFU for a 7-person room (6
+guests + host) doesn't just receive 6 streams — it forwards on the order
+of 30+ outgoing stream copies simultaneously (everyone needs everyone
+else's video+audio), all through one Python process.
+
+**Explicit decision (Nick, this conversation): self-reliance takes
+priority over guaranteed scale.** We build for 6-7 guests architecturally,
+but accept this may hit a real ceiling well before 7 that isn't a bug to
+patch, just Python's concurrency model. If/when that happens, the fix is
+running multiple relay worker processes to route around the GIL — a
+real, separate piece of engineering, not a tweak. Not building that
+preemptively; validating incrementally instead (see build order).
 
 ## Guest experience
 
-- No install. Guests join via a plain webpage (LiveKit JS SDK) — click a
-  link, allow camera/mic, done.
-- Auth/expiry model: TBD (open question).
-
-## Scaling target: 6-7 simultaneous guests, GPU-encoded (RTX 3080 host)
-
-Verified: NVIDIA's consumer GeForce NVENC concurrent-session cap has been
-raised repeatedly via driver updates (2 → 3 → 5 → 8 sessions as of recent
-drivers), which comfortably covers 6-7 simultaneous encode sessions on a
-current driver. Two things are NOT verified and need real-world testing,
-not assumption:
-
-1. **Encode throughput**, not just session count — the RTX 3080 (Ampere)
-   has a single physical NVENC engine, unlike dual-encoder RTX 40-series
-   cards higher up the stack. Session-count headroom doesn't guarantee
-   real-time throughput at 7-way parallel 1080p encode.
-2. **Decode load** — incoming guest video is decoded by LiveKit's
-   underlying WebRTC engine before Python ever sees a frame. Whether that
-   decode step is hardware-accelerated automatically wasn't confirmed from
-   docs.
-
-**Decision:** build the pipeline architecturally ready for 7 guests (not
-hardcoded to fewer), but validate scaling empirically in the build order
-below rather than assuming it works — same incremental approach the
-original VDO.Ninja replacement plan called for, just validating a
-different bottleneck (local encode/decode capacity instead of network).
+- No install. Guests open a webpage, click join, allow camera/mic.
+- Auth/expiry model: TBD (open question, same as before the pivot).
 
 ## Video: audio+video for every guest, camera optional per-guest
 
@@ -98,23 +105,34 @@ guests' recordings.
 
 ## Suggested build order
 
-1. Bare-bones two-person room using LiveKit's own sample/quickstart, no
-   custom code — validates LiveKit Cloud itself before building anything.
-2. Minimal guest join webpage.
-3. Recording service: subscribe to tracks, write synced files per
-   participant. Test with 2 people first.
-4. Scale test to 4 guests (Josh, Corey, Joshua), then the full group of 7.
-5. Host-side room creation + guest management (mute, remove, connection
+1. Signaling server that can complete a WebSocket handshake and pass a
+   JSON message back and forth — prove the hand-written protocol layer
+   works before any WebRTC is involved.
+2. Two guests, audio only: guest A and guest B join the same room, each
+   gets an aiortc `RTCPeerConnection`, `MediaRelay` forwards A's audio to
+   B and vice versa. Confirm they can actually hear each other.
+3. Add `MediaRecorder` per guest — confirm two separate, playable audio
+   files land in the output folder.
+4. Add video to the same 2-guest test.
+5. Scale to 4 guests, then the full 7 — this is where the aiortc
+   concurrency ceiling either does or doesn't show up. Treat this as a
+   real test, not a formality.
+6. Self-host coturn, test from a network where direct connection is
+   blocked (e.g. mobile hotspot) to confirm TURN relay actually works.
+7. Host-side room creation + guest management (mute, remove, connection
    status).
-6. Define the exact handoff folder/file naming ReSync will consume.
+8. Define the exact handoff folder/file naming ReSync will consume.
 
 ## Open questions (not yet resolved)
 
-- LiveKit Cloud pricing/limits for this usage pattern — needs a current
-  check before relying on the free tier long-term.
 - Room auth model: password? expiring links? waiting room vs. instant join?
 - Reconnect behavior: does a guest's mid-session drop need to produce one
   continuous file, or is a second file segment on reconnect acceptable?
 - Exact output file naming/folder convention for the ReSync handoff.
-- Host app UI approach — thin local web UI vs. small desktop shell around
-  the Python recording service.
+- Host app UI approach — thin local web UI vs. small desktop shell.
+- Where does the signaling/SFU process actually run — on the host's own
+  PC (same machine as recording), reachable via port-forwarding, or on a
+  separate self-hosted box? Running it on the host's home network
+  reintroduces some of the "my network is the bottleneck" risk that was
+  the original reason to avoid self-hosting — worth a real discussion
+  before this gets built out further.

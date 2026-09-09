@@ -2,54 +2,35 @@
 
 Remote-guest recording companion to [ReSync](https://github.com/nicholasbrownworship/Resync).
 
-ReSync handles local, in-person multitrack recording. ReSync Live handles the
-same job for **remote guests joining over the network** — each guest gets
-their own isolated, synced audio/video track, recorded straight to a folder
-on the host's PC. ReSync Live's job ends there; ReSync (or any editor) picks
-up the resulting files exactly like a local recording.
+ReSync handles local, in-person multitrack recording. ReSync Live handles
+the same job for **remote guests joining over the network** — a live
+group call where each guest gets their own isolated, synced audio/video
+track recorded straight to a folder on the host's PC.
 
-## Why this exists
+## Self-reliance
 
-The previous approach (VDO.Ninja bringing remote feeds into OBS) was fragile
-because it relied on the host's home network/upload bandwidth as a single
-point of failure, and isolating tracks reliably was inconsistent. ReSync Live
-is built on [LiveKit](https://livekit.io) (open-source WebRTC infrastructure)
-so the actual networking, NAT traversal, and relay is solved infrastructure,
-not something hand-rolled.
-
-## How recording works (the important architectural decision)
-
-There are two ways to get recordings out of a LiveKit room: **Egress**
-(LiveKit's server-side recording feature, which writes to cloud storage) and
-a **custom recording participant** that joins the room like any other guest,
-subscribes to every track, and writes files locally.
-
-**ReSync Live uses the second approach.** The host app connects to the
-LiveKit room as a hidden, silent participant. LiveKit's Python `rtc` SDK
-hands it decoded audio/video frames (with per-frame timestamps) for every
-guest's track. The app encodes those frames straight to disk via PyAV/FFmpeg.
-
-This means the LiveKit Cloud project is used **purely as a WebRTC relay** —
-no cloud storage, no Egress, ever. Recordings only ever exist on the host's
-own machine. See `docs/ARCHITECTURE.md` for the full reasoning and the
-alternatives that were ruled out.
+This project deliberately avoids any hosted third-party company or
+service — no LiveKit Cloud, no other SaaS, nothing running on
+infrastructure we don't own. The WebRTC media engine
+([aiortc](https://github.com/aiortc/aiortc)) and TURN relay (coturn) are
+existing open-source software we self-host, since hand-writing
+cryptography/codecs/NAT-relay protocols ourselves isn't reasonably
+scoped or safe to attempt. Signaling and the room/relay ("SFU") logic
+*are* self-written — see `docs/ARCHITECTURE.md` for the full reasoning
+and the tradeoffs this creates (notably: aiortc's Python concurrency
+ceiling is an accepted, unresolved risk at 6-7 simultaneous guests).
 
 ## Status
 
-Early scaffolding. Not yet functional end-to-end. Build order (see
-`docs/ARCHITECTURE.md` for detail):
-
-1. Bare-bones two-person room using LiveKit's own quickstart — validate the
-   platform before building anything custom.
-2. Minimal guest join webpage (`guest-page/`).
-3. Recording service that subscribes to tracks and writes files
-   (`recorder/`) — validate with 2 guests, then 4, then the full group of 7.
-4. Host-side room creation + guest management UI.
-5. Define the exact handoff folder/file format ReSync will consume.
+Early scaffolding, **not yet run end-to-end**. The highest-risk unproven
+piece is multi-guest renegotiation in `sfu/room.py` (flagged inline) —
+this needs to work even for the first 2-guest test. See
+`docs/ARCHITECTURE.md` for the full build order.
 
 ## Repo layout
 
-- `recorder/` — Python service that joins a room and records each
-  participant's tracks to local files.
-- `guest-page/` — static webpage guests open to join a room (no install).
-- `docs/` — architecture decisions and open questions.
+- `signaling/` — hand-written WebSocket signaling server (stdlib only).
+- `sfu/` — room/relay logic built on aiortc.
+- `recorder/` — per-guest recording, built on aiortc's `MediaRecorder`.
+- `guest-page/` — plain-JS guest join page (native browser WebRTC APIs).
+- `docs/ARCHITECTURE.md` — full decision record and open questions.

@@ -1,24 +1,18 @@
 <!DOCTYPE html>
 <!--
-  ReSync Live guest join page.
+  ReSync Live guest join page. No CDN, no third-party JS library - uses
+  only the browser's native RTCPeerConnection and WebSocket APIs, talking
+  to our own hand-written signaling server (signaling/ws_server.py).
 
-  STATUS: first-draft skeleton, not yet tested end-to-end. Uses LiveKit's
-  JS client SDK from a CDN. Before relying on this, verify:
-    - the current recommended CDN URL/version for livekit-client
-    - token generation (currently a placeholder - needs a real endpoint or
-      manual token paste for early testing)
-
-  Guests need no install: open this page, click Join, allow camera/mic.
+  STATUS: first draft, not yet tested end-to-end.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>Join Session — ReSync Live</title>
-  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   <style>
     body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding-top: 4rem; }
     button { font-size: 1.2rem; padding: 0.75rem 2rem; cursor: pointer; }
-    video { width: 320px; margin: 1rem; border-radius: 8px; background: #000; }
     #status { margin-top: 1rem; color: #999; }
   </style>
 </head>
@@ -26,40 +20,60 @@
   <h1>Join the session</h1>
   <button id="joinBtn">Join</button>
   <div id="status"></div>
-  <div id="videos"></div>
 
   <script>
-    // TODO: replace with real values once room/token issuance is wired up.
-    // For early testing, generate a token manually (e.g. via `lk token
-    // create` or the LiveKit Cloud dashboard) and paste it here.
-    const LIVEKIT_URL = "wss://your-project.livekit.cloud";
-    const PLACEHOLDER_TOKEN = "";
+    // TODO: make configurable rather than hardcoded once host/port is settled.
+    const SIGNALING_URL = "ws://localhost:8765";
 
     const statusEl = document.getElementById("status");
-    const videosEl = document.getElementById("videos");
+    const identity = "guest-" + Math.random().toString(36).slice(2, 8);
 
     document.getElementById("joinBtn").addEventListener("click", async () => {
-      if (!PLACEHOLDER_TOKEN) {
-        statusEl.textContent = "No token configured yet - see comment in this file.";
+      statusEl.textContent = "Requesting camera/mic...";
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch (err) {
+        statusEl.textContent = "Could not access camera/mic: " + err.message;
         return;
       }
 
-      const room = new LivekitClient.Room();
+      const pc = new RTCPeerConnection();
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      room.on(LivekitClient.RoomEvent.Disconnected, () => {
-        statusEl.textContent = "Disconnected.";
-      });
+      const ws = new WebSocket(SIGNALING_URL);
 
-      try {
+      ws.onopen = async () => {
         statusEl.textContent = "Connecting...";
-        await room.connect(LIVEKIT_URL, PLACEHOLDER_TOKEN);
-        await room.localParticipant.setCameraEnabled(true);
-        await room.localParticipant.setMicrophoneEnabled(true);
-        statusEl.textContent = "Connected as " + room.localParticipant.identity;
-      } catch (err) {
-        statusEl.textContent = "Failed to connect: " + err.message;
-        console.error(err);
-      }
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({
+          type: "offer",
+          identity: identity,
+          sdp: pc.localDescription.sdp,
+        }));
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "answer") {
+          await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+          statusEl.textContent = "Connected as " + identity;
+        }
+        // NOTE: server-initiated renegotiation offers (when another
+        // guest joins later) aren't handled here yet - see the
+        // renegotiation TODO in sfu/room.py. Needed before this
+        // actually supports more than 2 guests.
+      };
+
+      ws.onerror = () => {
+        statusEl.textContent = "Signaling connection failed.";
+      };
+
+      ws.onclose = () => {
+        statusEl.textContent = "Disconnected.";
+      };
     });
   </script>
 </body>
