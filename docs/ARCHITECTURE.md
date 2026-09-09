@@ -179,7 +179,26 @@ same peer connection would race.
   data-channel message, or embedding identity in the track's stream ID)
   before real multi-guest testing.
 
-## Open questions (not yet resolved)
+## Host app: packaged desktop app, not a script (resolved)
+
+Explicit correction (Nick, this conversation): the host side must be
+something Nick downloads and double-clicks — not a terminal command.
+**Decision: Tkinter** for the GUI (ships inside Python's standard
+library, so it adds zero extra dependency — fits the self-reliance bar
+better than pulling in Qt or a separate GUI framework), wrapping the
+same signaling/aiortc/recorder engine already built, packaged into a
+standalone `.exe` via PyInstaller (`app.py` is the entry point;
+`server/engine.py` runs the asyncio signaling+aiortc loop on a
+background thread so it doesn't block Tkinter's own mainloop).
+
+**Known, unverified risk:** PyAV (which aiortc depends on for codec
+handling) has a documented history of PyInstaller bundling issues —
+missing modules, native library discovery failures — reported against
+multiple PyInstaller/PyAV versions over the years. Modern PyInstaller
+has improved hook support for this kind of thing, but I'm not claiming
+it'll package cleanly on the first attempt. Treat "does this actually
+produce a working .exe" as its own early validation step (see
+docs/BUILD.md), not an assumption baked into the plan.
 
 - Room auth model: password? expiring links? waiting room vs. instant join?
 - Reconnect behavior: does a guest's mid-session drop need to produce one

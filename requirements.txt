@@ -2,3 +2,9 @@
 # No signaling/web framework - the signaling server is hand-written
 # against Python's standard library only (see signaling/ws_server.py).
 aiortc>=1.9.0
+
+# GUI is Tkinter, which ships with Python itself - no entry needed here.
+
+# Packaging the desktop app into a standalone .exe (build-time only,
+# not needed to just run `python app.py` from source).
+pyinstaller>=6.0.0
