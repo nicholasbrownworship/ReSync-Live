@@ -274,6 +274,33 @@ otherwise have surfaced during Nick's first live test):
   actually silent (would need to decode and inspect the recorded
   audio, not just check that files exist).
 
+## Real gap found and fixed: guests had no way to reach the join page
+
+Nick caught this directly ("walk me through the connection... you
+aren't getting it connected the way I was asking"). The signaling
+server only ever spoke the WebSocket protocol - there was no mechanism
+for a guest's browser to actually load `guest-page/index.html` over the
+network. It would have required manually sending guests the HTML file,
+which isn't "no install" in any meaningful sense.
+
+**Fix:** the same server now serves the guest page as a plain HTTP
+response on the SAME port, to any request that isn't a WebSocket
+upgrade. A guest visits `http://<host-ip>:8765` directly in their
+browser and gets the join page - one address, one port, confirmed
+working via a real HTTP GET test. The join page also now defaults its
+"server address" field to whatever host it was loaded from, so a guest
+doesn't have to re-type the address they just used.
+
+**New flaky issue found while re-testing this:** in one of several test
+runs, one guest's video file came out corrupted (48 bytes) with an
+`av.error.ArgumentError` inside aiortc's own `MediaRecorder` internals -
+not in code written for this project. Reran the identical test 3 more
+times with no repeat. Root cause not yet identified; possibly related
+to how few frames a short synthetic test produces, which may not
+reflect real, longer guest sessions. Flagged here rather than assumed
+fixed - if a similarly tiny/corrupted file shows up during Nick's real
+test, that's this same open issue, not a new one.
+
 ## Open questions (not yet resolved)
 
 - Reconnect behavior: does a guest's mid-session drop need to produce one
