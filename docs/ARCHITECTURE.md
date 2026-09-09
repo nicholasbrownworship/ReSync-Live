@@ -349,6 +349,30 @@ in this environment. This is standard, well-established Web Audio
 usage, but "standard usage" and "verified working" are different
 claims, and only the former is true right now.
 
+## CRITICAL FIX: HTTPS/WSS required (this session)
+
+Found while reviewing what's actually left, not from a test failure:
+browsers only allow `getUserMedia` (camera/mic) in a secure context -
+HTTPS or `localhost`. Guests reach this app over a plain public IP,
+which does NOT qualify, meaning `navigator.mediaDevices` would be
+`undefined` for every remote guest - a complete, silent blocker that
+none of the earlier testing would have caught (all of it used aiortc-
+to-aiortc simulation, never a real browser's security model).
+
+**Fix:** `certs.py` generates a self-signed certificate on first run
+(using `cryptography`, already an aiortc dependency - no new external
+service or CA involved), and the whole server socket is wrapped in TLS.
+Verified with a real TLS handshake (not aiortc simulation this time)
+completing and serving the join page over HTTPS, and the full
+join/renegotiation/recording flow re-confirmed working over WSS.
+
+**Real, unavoidable UX cost:** guests will see a "connection isn't
+private" warning on first visit, since the cert isn't signed by a
+trusted authority, and need to click through it once. This is the
+correct tradeoff for staying fully self-hosted (a trusted cert requires
+either a domain + CA like Let's Encrypt, or a paid cert - both bring in
+a third party Nick explicitly ruled out for now).
+
 ## Open questions (not yet resolved)
 
 - Reconnect behavior: does a guest's mid-session drop need to produce one
@@ -356,5 +380,3 @@ claims, and only the former is true right now.
 - Exact output file naming/folder convention for the ReSync handoff.
 - coturn install/config specifics on the host machine (which OS, exact
   port/range choices) — not yet worked out.
-- Track-to-identity mapping on the guest page's remote video display —
-  still grouping by arrival order, fine for 2 guests, not fine for 3+.
