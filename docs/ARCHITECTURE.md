@@ -301,6 +301,54 @@ reflect real, longer guest sessions. Flagged here rather than assumed
 fixed - if a similarly tiny/corrupted file shows up during Nick's real
 test, that's this same open issue, not a new one.
 
+## Volume control (this session) - replaces the old binary mute
+
+Nick clarified the actual requirement: each guest needs to adjust how
+loud every OTHER guest sounds to them personally (local, no effect on
+anyone else), AND the host needs a per-guest gain control that affects
+BOTH the recording and the live mix - not just the live-only mute built
+earlier. The reasoning: clipping/peaking is the one thing that can't be
+fixed in post, so gain-staging has to happen before or at the point of
+capture, not after.
+
+**Host gain (`sfu/room.py` `GainAdjustableAudioTrack`, `Room.set_gain`):**
+applied ONCE at the source, right when a guest's audio track arrives -
+both the recorder and every relay to other guests now read from this
+SAME gain-adjusted track, so a host-side gain change affects the
+recording and the live mix identically. This replaces the old
+`MutableAudioTrack` (binary mute, live-only, recording untouched) —
+mute is now just `gain=0.0` on the same mechanism. Exposed in the
+desktop app as a 0-200% slider per guest (was a Mute/Unmute button).
+
+**Verified with real testing, not just review:** used a synthetic audio
+track producing an actual sine tone (not aiortc's default silence),
+set gain to 0.2 partway through a recording, decoded the resulting WAV,
+and measured mean amplitude before/after: ratio came out to 0.201 -
+matching the 0.2 target almost exactly. (First attempt at this test
+used a flat/constant test signal instead of a real tone, which came out
+looking like a bug - the recording pipeline resamples audio in a way
+that suppresses near-DC content, which a constant test signal
+resembles but real voice audio does not. Re-tested with a proper sine
+wave and confirmed the gain math is correct; the first result was a
+test artifact, not a real bug.)
+
+**Guest-side local volume (`guest-page/index.html`):** required
+finally solving the previously-flagged track-identity gap, since you
+can't label a volume slider for a guest you can't identify. Solved via
+`RTCTrackEvent.transceiver.mid` - the server tracks which mid on each
+guest's peer connection carries which other guest's track, and pushes
+a `track_info` message after every (re)negotiation. Verified via a
+second simulated-client cross-check: the mids the server reports match
+exactly what the client's own `pc.getTransceivers()` independently
+shows, confirming the mapping is internally consistent.
+
+**Still NOT verified:** the actual Web Audio API wiring in the browser
+(GainNode routing, muted `<video>` element playing audio separately
+through Web Audio instead) - no real browser available to test against
+in this environment. This is standard, well-established Web Audio
+usage, but "standard usage" and "verified working" are different
+claims, and only the former is true right now.
+
 ## Open questions (not yet resolved)
 
 - Reconnect behavior: does a guest's mid-session drop need to produce one
