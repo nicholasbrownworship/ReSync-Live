@@ -229,6 +229,51 @@ docs/BUILD.md), not an assumption baked into the plan.
   only; video mute wasn't attempted (guests can already disable their
   own camera per the earlier "camera optional per-guest" decision).
 
+## First real integration test (this session) - core flow verified working
+
+Ran the actual shipped `server/engine.py` + `sfu/room.py` code (not a
+mockup) against two simulated guests using aiortc's own synthetic
+audio/video tracks, connecting through the real hand-written signaling
+protocol. This is the first time any of this code had actually executed.
+
+**Confirmed working:**
+- Signaling handshake and the join flow end-to-end.
+- Multi-guest renegotiation - the highest-risk, least-proven piece.
+  Guest A (already connected) correctly received a pushed renegotiation
+  offer and got Guest B's audio+video once B joined; Guest B correctly
+  received A's already-published tracks as part of its own initial
+  answer. Both directions work.
+- Recording: separate, correctly-sized audio (`.wav`) and video (`.mp4`)
+  files were written for both guests via aiortc's `MediaRecorder`.
+- Session password: wrong password rejected with an error message,
+  correct password admitted.
+- Kick: guest removed from the room and their recording stopped cleanly.
+
+**Bugs found and fixed as a direct result of this test** (would
+otherwise have surfaced during Nick's first live test):
+- A real shutdown bug in `server/engine.py` - stopping the engine threw
+  a `RuntimeError` because the event loop was stopped while the
+  signaling server's coroutine hadn't finished. Fixed by cancelling the
+  server task properly and waiting for it to finish before stopping the
+  loop.
+
+**Still NOT covered by this test** (so still genuinely unverified):
+- The actual browser guest page (`guest-page/index.html`) - the test
+  used aiortc as the simulated guest, not a real browser. Browser
+  WebRTC implementations can behave differently at the margins.
+- Real camera/microphone hardware - synthetic tracks (silence, a green
+  frame) stand in for real capture devices.
+- The Tkinter desktop app (`app.py`) - no display available to test
+  against in this environment.
+- coturn / real NAT traversal - this test ran entirely on localhost
+  with no ICE servers configured, so it says nothing about behavior
+  across the actual internet once port-forwarding and TURN are involved.
+- PyInstaller packaging into a `.exe`.
+- Mute's actual audio effect - confirmed the code runs without
+  crashing when toggled, but did NOT verify the silenced audio is
+  actually silent (would need to decode and inspect the recorded
+  audio, not just check that files exist).
+
 ## Open questions (not yet resolved)
 
 - Reconnect behavior: does a guest's mid-session drop need to produce one
