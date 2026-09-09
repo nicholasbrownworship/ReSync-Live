@@ -123,6 +123,62 @@ guests' recordings.
    status).
 8. Define the exact handoff folder/file naming ReSync will consume.
 
+## Hosting location: Nick's own PC/network (resolved)
+
+Explicit decision: no rented server of any kind, including a VPS —
+self-hosted on Nick's own home network, on the same fiber connection
+used for everything else.
+
+**Bandwidth check (resolved, not a concern):** a 7-person room with
+video needs roughly 12 Mbps down / 60+ Mbps up through the relay (every
+guest's stream gets re-forwarded to every other guest). Nick's
+connection is symmetric fiber at 500+ Mbps, which comfortably clears
+this — the "home network is the bottleneck" failure mode that broke the
+old VDO.Ninja setup does NOT apply here on this connection.
+
+**Reachability (resolved):**
+- Router port-forwarding: available (Nick has admin access). Only a
+  small, fixed set of ports need forwarding — the signaling WebSocket
+  port and coturn's TURN port/relay range — not a wide unpredictable
+  range, because guest media is routed through the self-hosted coturn
+  relay rather than relying on raw direct NAT traversal.
+- No static IP. **Decision: manual IP sharing for now** — before a
+  session, share the current public IP directly with the small, stable
+  guest roster (Josh, Corey, Joshua, Spencer). Zero third parties
+  involved. **Future direction (not now):** Nick owns a domain and
+  intends to eventually point it at the home IP instead of sharing it
+  manually — this still depends on a domain registrar (an inherent part
+  of how domain names work at all), so it's a smaller, later compromise
+  on the "zero third party" principle, made deliberately rather than
+  by accident. Not being built now.
+
+## Renegotiation (first real implementation attempt, still unverified)
+
+Star topology: every guest connects only to the server, never directly
+to another guest. When guest A is already connected and guest B starts
+publishing, the server must push a NEW offer to A's existing connection
+and get a fresh answer — this is "renegotiation," and it's the part that
+makes a self-built multi-party SFU harder than a simple 1:1 call.
+
+Implemented in `sfu/room.py`: a per-guest `asyncio.Lock` serializes
+renegotiation attempts to the same guest, since a guest normally
+publishes an audio track AND a video track within milliseconds of each
+other — without the lock, two overlapping `createOffer()` calls to the
+same peer connection would race.
+
+**What this does NOT yet handle (known gaps, not silently ignored):**
+- Full "perfect negotiation" (polite/impolite peer roles, offer
+  rollback) for glare where BOTH sides try to renegotiate at once. Not
+  needed today because only the server ever initiates renegotiation —
+  but relevant if guests muting/unmuting starts causing rapid track
+  add/remove later.
+- Mapping which incoming browser `track` event belongs to which guest.
+  Right now the guest page just displays tracks in arrival order — fine
+  for a 2-guest test, not fine once there are 3+ others to tell apart.
+  Needs an identity tag carried alongside each track (e.g. via a small
+  data-channel message, or embedding identity in the track's stream ID)
+  before real multi-guest testing.
+
 ## Open questions (not yet resolved)
 
 - Room auth model: password? expiring links? waiting room vs. instant join?
@@ -130,9 +186,5 @@ guests' recordings.
   continuous file, or is a second file segment on reconnect acceptable?
 - Exact output file naming/folder convention for the ReSync handoff.
 - Host app UI approach — thin local web UI vs. small desktop shell.
-- Where does the signaling/SFU process actually run — on the host's own
-  PC (same machine as recording), reachable via port-forwarding, or on a
-  separate self-hosted box? Running it on the host's home network
-  reintroduces some of the "my network is the bottleneck" risk that was
-  the original reason to avoid self-hosting — worth a real discussion
-  before this gets built out further.
+- coturn install/config specifics on the host machine (which OS, exact
+  port/range choices) — not yet worked out.

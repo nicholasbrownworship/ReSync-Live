@@ -1,6 +1,9 @@
 """
 ReSync Live server entrypoint: runs the self-written signaling server
-and wires incoming offers into the Room/relay logic.
+and wires messages into the Room/relay logic. Each guest's WebSocket
+connection carries messages in both directions - not just responses to
+what the guest sent, since the server needs to push renegotiation offers
+to already-connected guests when someone new starts publishing.
 
 STATUS: first draft, not yet run end-to-end.
 
@@ -27,6 +30,7 @@ room = Room(output_dir=OUTPUT_DIR, session_id=session_id)
 
 
 async def on_connection(conn):
+    identity = None
     logger.info("New signaling connection")
     try:
         while True:
@@ -34,13 +38,26 @@ async def on_connection(conn):
             if msg is None:
                 break
 
-            if msg.get("type") == "offer":
+            msg_type = msg.get("type")
+
+            if msg_type == "offer" and identity is None:
+                # This is a NEW guest's initial join offer.
                 identity = msg["identity"]
-                answer = await room.handle_offer(identity, msg["sdp"], "offer")
+                answer = await room.handle_join(identity, conn, msg["sdp"])
                 await conn.send_json({"type": "answer", "sdp": answer.sdp})
+
+            elif msg_type == "answer" and identity is not None:
+                # This is an existing guest replying to a renegotiation
+                # offer the SERVER pushed (see Room._renegotiate).
+                await room.handle_renegotiation_answer(identity, msg["sdp"])
+
             else:
-                logger.warning("Unhandled message type: %s", msg.get("type"))
+                logger.warning(
+                    "Unexpected message type=%s while identity=%s", msg_type, identity
+                )
     finally:
+        if identity:
+            await room.remove_guest(identity)
         await conn.close()
 
 

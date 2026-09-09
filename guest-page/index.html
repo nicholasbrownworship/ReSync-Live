@@ -20,6 +20,7 @@
   <h1>Join the session</h1>
   <button id="joinBtn">Join</button>
   <div id="status"></div>
+  <div id="remoteVideos" style="display:flex; flex-wrap:wrap; justify-content:center; gap:1rem; margin-top:2rem;"></div>
 
   <script>
     // TODO: make configurable rather than hardcoded once host/port is settled.
@@ -42,6 +43,19 @@
       const pc = new RTCPeerConnection();
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
+      // Display each remote guest's track as it arrives. NOTE: this
+      // groups purely by arrival order, not by which guest a track
+      // belongs to - the signaling protocol doesn't yet attach an
+      // identity to each track, so with more than 2 guests this will
+      // need that mapping added before it's actually usable.
+      pc.ontrack = (event) => {
+        const el = document.createElement(event.track.kind === "video" ? "video" : "audio");
+        el.autoplay = true;
+        el.style.width = "240px";
+        el.srcObject = event.streams[0];
+        document.getElementById("remoteVideos").appendChild(el);
+      };
+
       const ws = new WebSocket(SIGNALING_URL);
 
       ws.onopen = async () => {
@@ -57,14 +71,24 @@
 
       ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
+
         if (msg.type === "answer") {
+          // Response to OUR initial join offer.
           await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
           statusEl.textContent = "Connected as " + identity;
+
+        } else if (msg.type === "offer") {
+          // The SERVER is renegotiating (another guest started
+          // publishing audio/video and needs to reach us). Respond
+          // with a fresh answer - do not send a new offer of our own.
+          await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({
+            type: "answer",
+            sdp: pc.localDescription.sdp,
+          }));
         }
-        // NOTE: server-initiated renegotiation offers (when another
-        // guest joins later) aren't handled here yet - see the
-        // renegotiation TODO in sfu/room.py. Needed before this
-        // actually supports more than 2 guests.
       };
 
       ws.onerror = () => {
