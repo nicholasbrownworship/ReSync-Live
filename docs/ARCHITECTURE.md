@@ -373,6 +373,46 @@ correct tradeoff for staying fully self-hosted (a trusted cert requires
 either a domain + CA like Let's Encrypt, or a paid cert - both bring in
 a third party Nick explicitly ruled out for now).
 
+## Pre-first-run hardening pass (this session)
+
+Nick asked for every major issue to be addressed before his first real
+download/test. Results:
+
+**coturn:** written up in `docs/COTURN_SETUP.md` + `coturn/turnserver.conf`,
+recommending Docker (native Windows builds are Cygwin-based and have
+documented crash reports) - NOT independently tested, no Windows/Docker
+available in this environment. This is the one major item that
+genuinely cannot be verified without Nick's own machine.
+
+**PyInstaller packaging - real, positive result:** built and RAN the
+actual packaged binary (Linux build, not the Windows .exe Nick will
+eventually produce, but exercising the same bundling logic). Confirmed:
+- PyAV/aiortc bundle automatically via a maintained community
+  PyInstaller hook - the packaging risk flagged earlier is smaller than
+  expected, no custom hook-writing needed.
+- The Tkinter GUI actually renders correctly when run under a virtual
+  display (screenshot-verified) - not just "doesn't crash on import."
+- Could NOT verify clicking "Start Session" inside the packaged binary
+  specifically due to GUI-automation limits in this sandbox (no window
+  manager cooperation), but that button calls the exact same
+  `ResyncLiveEngine.start()` already verified extensively via the
+  non-GUI test harnesses (TLS, signaling, renegotiation, recording) -
+  so the remaining gap is narrow, not the whole startup path.
+
+**Flaky recorder bug - characterized further, not fixed:** re-ran 8
+clean end-to-end tests. Failure rate ~1-in-8. Consistent pattern across
+every failure observed so far: it is ALWAYS the second-or-later
+guest's VIDEO file specifically (never the first guest's, never
+anyone's audio) - pointing at a race condition inside aiortc's own
+video encoder initialization when a second `MediaRecorder` starts up
+while another is already mid-flight, not in code written for this
+project. Not fixed - this is inside a third-party library's internals,
+and chasing it further has real diminishing returns against tonight's
+deadline. Practical implication for the first real test: if a guest's
+video file comes out tiny/corrupted, their AUDIO recording has, in
+every observed case so far, still been intact - the session isn't a
+total loss even if this hits.
+
 ## Open questions (not yet resolved)
 
 - Reconnect behavior: does a guest's mid-session drop need to produce one
