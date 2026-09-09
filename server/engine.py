@@ -9,9 +9,11 @@ STATUS: first draft, not yet run end-to-end.
 import asyncio
 import logging
 import os
+import ssl
 import threading
 import time
 
+from certs import ensure_certificate
 from config import Config
 from signaling.ws_server import serve
 from sfu.room import Room
@@ -93,9 +95,17 @@ class ResyncLiveEngine:
             logger.exception("Could not read guest page at %s", GUEST_PAGE_PATH)
             guest_page_html = ""
 
+        # TLS is required, not optional: browsers only allow camera/mic
+        # access (getUserMedia) in a secure context, and guests connect
+        # over a plain public IP, not localhost - see certs.py.
+        cert_path, key_path = ensure_certificate()
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(cert_path, key_path)
+
         try:
             self._server_task = self._loop.create_task(
-                serve(self.host, self.port, on_connection, static_html=guest_page_html)
+                serve(self.host, self.port, on_connection,
+                      static_html=guest_page_html, ssl_context=ssl_context)
             )
             self._loop.run_forever()
         except Exception:

@@ -156,13 +156,16 @@ async def _handshake(
     return True
 
 
-async def serve(host: str, port: int, on_connection, static_html: str = ""):
+async def serve(host: str, port: int, on_connection, static_html: str = "", ssl_context=None):
     """
     Starts the server. `on_connection` is an async callable invoked with
     a WebSocketConnection for each client that completes the WS
     handshake. `static_html`, if given, is served as-is to any plain
     (non-WebSocket) HTTP request on this same port - this is how guests
-    load the join page: they visit http://<host>:<port>/ directly.
+    load the join page: they visit https://<host>:<port>/ directly.
+    `ssl_context`, if given, wraps the whole listening socket in TLS -
+    required so guests' browsers treat this as a secure context and
+    allow camera/mic access (see certs.py).
     """
 
     async def handle(reader, writer):
@@ -175,7 +178,7 @@ async def serve(host: str, port: int, on_connection, static_html: str = ""):
         finally:
             writer.close()
 
-    server = await asyncio.start_server(handle, host, port)
-    logger.info("Signaling server listening on %s:%d", host, port)
+    server = await asyncio.start_server(handle, host, port, ssl=ssl_context)
+    logger.info("Signaling server listening on %s:%d (tls=%s)", host, port, bool(ssl_context))
     async with server:
         await server.serve_forever()

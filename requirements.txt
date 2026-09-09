@@ -13,3 +13,9 @@ numpy>=1.24.0
 # Packaging the desktop app into a standalone .exe (build-time only,
 # not needed to just run `python app.py` from source).
 pyinstaller>=6.0.0
+
+# Self-signed TLS cert generation (certs.py) - required for HTTPS/WSS,
+# which browsers require before allowing camera/mic access at all.
+# Already an aiortc transitive dependency; listed explicitly since we
+# import it directly ourselves too.
+cryptography>=41.0.0

@@ -6,3 +6,4 @@ venv/
 recordings/
 *.mp4
 *.wav
+certs/

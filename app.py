@@ -48,7 +48,12 @@ class App:
 
         self.ip_label = tk.Label(
             root,
-            text=f"Local IP: {get_local_ip()}:{PORT}\n(share your PUBLIC IP with guests, not this)",
+            text=(
+                f"Local IP: {get_local_ip()}:{PORT}\n"
+                "(share your PUBLIC IP with guests, not this)\n"
+                "Tell guests to visit https:// (not http://) and click through\n"
+                "the one-time browser security warning - see docs/ARCHITECTURE.md."
+            ),
             justify="center", fg="#555",
         )
         self.ip_label.pack(pady=(8, 8))

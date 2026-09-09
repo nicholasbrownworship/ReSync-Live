@@ -34,6 +34,11 @@
 
   <label for="serverInput">Host's address (they'll send you this)</label>
   <input id="serverInput" placeholder="e.g. 123.45.67.89:8765" />
+  <p style="color:#999; font-size:0.85rem; max-width:320px; margin:0.3rem auto;">
+    You'll likely see a "connection isn't private" browser warning first -
+    that's expected (the host's app secures the connection itself, without
+    a paid certificate). Click "Advanced" then "Proceed" to continue.
+  </p>
 
   <label for="nameInput">Your name</label>
   <input id="nameInput" placeholder="e.g. Josh" />
@@ -155,7 +160,7 @@
       }
 
       let pc;
-      const ws = new WebSocket("ws://" + address);
+      const ws = new WebSocket("wss://" + address);
 
       ws.onopen = () => { statusEl.textContent = "Waiting for session details..."; };
 
