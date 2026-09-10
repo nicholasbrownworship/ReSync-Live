@@ -49,6 +49,7 @@
   <br />
   <button id="joinBtn">Join</button>
   <div id="status"></div>
+  <div id="selfPreviewContainer"></div>
   <div id="remoteGuests"></div>
 
   <script>
@@ -157,6 +158,31 @@
       } catch (err) {
         statusEl.textContent = "Could not access camera/mic: " + err.message;
         return;
+      }
+
+      // Show what's actually being captured, immediately - the biggest
+      // real gap found in testing was granting camera permission and
+      // then seeing NOTHING happen, with no way to tell it was actually
+      // working. This is your own feed, muted (so you don't hear
+      // yourself echo back), separate from anyone else's session audio.
+      const selfTile = document.createElement("div");
+      selfTile.className = "guest-tile";
+      const selfVideo = document.createElement("video");
+      selfVideo.autoplay = true;
+      selfVideo.muted = true;
+      selfVideo.srcObject = stream;
+      selfTile.appendChild(selfVideo);
+      const selfLabel = document.createElement("div");
+      selfLabel.className = "name";
+      selfLabel.textContent = "You (" + (displayName || "unnamed") + ")";
+      selfTile.appendChild(selfLabel);
+      document.getElementById("selfPreviewContainer").appendChild(selfTile);
+
+      if (stream.getVideoTracks().length === 0) {
+        statusEl.textContent = "Warning: no video track (camera may be unavailable) - continuing with audio only.";
+      }
+      if (stream.getAudioTracks().length === 0) {
+        statusEl.textContent = "Warning: no audio track (microphone may be unavailable).";
       }
 
       let pc;
