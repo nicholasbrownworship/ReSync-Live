@@ -49,6 +49,13 @@
   <label for="cameraSelect">Camera</label>
   <select id="cameraSelect"><option value="">Default camera</option></select>
 
+  <label for="resolutionSelect">Video quality</label>
+  <select id="resolutionSelect">
+    <option value="480">480p (lower bandwidth)</option>
+    <option value="720" selected>720p (recommended)</option>
+    <option value="1080">1080p (higher bandwidth)</option>
+  </select>
+
   <label for="micSelect">Microphone</label>
   <select id="micSelect"><option value="">Default microphone</option></select>
 
@@ -104,6 +111,15 @@
     const statusEl = document.getElementById("status");
     const remoteGuestsEl = document.getElementById("remoteGuests");
     const identity = "guest-" + Math.random().toString(36).slice(2, 8);
+
+    function videoConstraintsFor(deviceId) {
+      const dims = { "480": [854, 480], "720": [1280, 720], "1080": [1920, 1080] };
+      const res = document.getElementById("resolutionSelect").value;
+      const [w, h] = dims[res] || dims["720"];
+      const constraints = { width: { ideal: w }, height: { ideal: h } };
+      if (deviceId) constraints.deviceId = { exact: deviceId };
+      return constraints;
+    }
 
     // mid -> {identity, display_name, kind}, filled in from "track_info"
     // messages the server sends after every (re)negotiation.
@@ -192,7 +208,7 @@
       const deviceId = document.getElementById("cameraSelect").value;
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: deviceId ? { deviceId: { exact: deviceId } } : true,
+          video: videoConstraintsFor(deviceId),
         });
         const newTrack = newStream.getVideoTracks()[0];
         await videoSender.replaceTrack(newTrack);
@@ -204,6 +220,28 @@
         statusEl.textContent = "Switched camera.";
       } catch (err) {
         statusEl.textContent = "Could not switch camera: " + err.message;
+      }
+    });
+
+    // Changing quality re-applies with the CURRENTLY selected camera,
+    // live, the same way switching cameras does.
+    document.getElementById("resolutionSelect").addEventListener("change", async () => {
+      if (!pc || !videoSender) return;
+      const deviceId = document.getElementById("cameraSelect").value;
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraintsFor(deviceId),
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        await videoSender.replaceTrack(newTrack);
+        stream.getVideoTracks().forEach((t) => t.stop());
+        stream.getVideoTracks().forEach((t) => stream.removeTrack(t));
+        stream.addTrack(newTrack);
+        const selfVideo = document.querySelector("#selfPreviewContainer video");
+        if (selfVideo) selfVideo.srcObject = stream;
+        statusEl.textContent = "Switched video quality.";
+      } catch (err) {
+        statusEl.textContent = "Could not switch video quality: " + err.message;
       }
     });
 
@@ -242,7 +280,7 @@
         const chosenCamera = document.getElementById("cameraSelect").value;
         const chosenMic = document.getElementById("micSelect").value;
         stream = await navigator.mediaDevices.getUserMedia({
-          video: chosenCamera ? { deviceId: { exact: chosenCamera } } : true,
+          video: videoConstraintsFor(chosenCamera),
           audio: chosenMic ? { deviceId: { exact: chosenMic } } : true,
         });
         refreshDeviceList(); // labels are only populated AFTER permission is granted
