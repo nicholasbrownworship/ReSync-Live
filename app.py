@@ -10,10 +10,30 @@ standalone .exe is the next step after this runs correctly from source
 Run from source (before packaging):
     python app.py
 """
+import logging
 import os
 import socket
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
+
+# CRITICAL FIX: without this, Python's logging module shows NOTHING
+# below WARNING level - every logger.info() call throughout this
+# entire codebase (frame-arrival diagnostics, format detection,
+# recording status, everything) was silently producing zero output.
+# This was discovered only after several rounds of asking for console
+# output that was never actually capable of appearing. Logs go to a
+# file next to the exe AND to the console (when one exists), so
+# diagnostic info survives even when double-clicking hides the console.
+LOG_PATH = os.path.join(
+    os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)),
+    "resync-live.log",
+)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_PATH, encoding="utf-8")],
+)
 
 from config import Config
 from server.engine import ResyncLiveEngine
