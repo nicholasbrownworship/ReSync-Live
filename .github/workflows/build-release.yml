@@ -1,0 +1,40 @@
+name: Build Windows Release
+
+# STATUS: first draft, not yet verified running. This runs on GitHub's
+# own Windows machines (not tested against this specific project's
+# dependencies before) - matches the pattern ReSync's repo already
+# uses. If this fails, the Actions tab on the repo has the real log.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build executable
+        run: pyinstaller --onefile --windowed --name "ReSyncLive" app.py
+
+      - name: Upload build artifact (always, even outside a tag push)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReSyncLive-Windows
+          path: dist/ReSyncLive.exe
+
+      - name: Create GitHub Release (only on a version tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ReSyncLive.exe
