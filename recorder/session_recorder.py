@@ -36,7 +36,19 @@ class _FrameCountingTrack(MediaStreamTrack):
         frame = await self.source_track.recv()
         self.count += 1
         if self.count == 1:
-            logger.info("FIRST %s frame received for %s", self.kind, self.label)
+            # For video specifically: this is the actual resolution the
+            # SERVER receives, which may differ from what the guest's
+            # camera captured - browsers apply their own automatic
+            # downscaling to outgoing WebRTC video based on bandwidth
+            # estimation, independent of capture resolution. This is the
+            # fact that actually matters for "is the recording low-res."
+            if self.kind == "video":
+                logger.info(
+                    "FIRST %s frame received for %s (%dx%d)",
+                    self.kind, self.label, frame.width, frame.height,
+                )
+            else:
+                logger.info("FIRST %s frame received for %s", self.kind, self.label)
         elif self.count % 150 == 0:
             logger.info("%d %s frames received so far for %s", self.count, self.kind, self.label)
         return frame
