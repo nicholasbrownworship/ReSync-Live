@@ -11,6 +11,7 @@ Run from source (before packaging):
     python app.py
 """
 import logging
+import math
 import os
 import socket
 import sys
@@ -40,6 +41,20 @@ from server.engine import ResyncLiveEngine
 
 DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "ReSyncLive Recordings")
 PORT = 8765
+
+
+def db_to_linear(db: float) -> float:
+    return 10 ** (db / 20)
+
+
+def linear_to_db(gain: float) -> float:
+    # A confirmed real limitation this replaces: the old 0-200% (0x-2x)
+    # linear range was nowhere near enough to rescue genuinely quiet
+    # microphone input - real audio gain staging routinely needs 10x or
+    # more. dB is also the standard way audio gain is actually expressed.
+    if gain <= 0:
+        return -60.0  # effectively silent; avoids log(0)
+    return max(-60.0, 20 * math.log10(gain))
 
 
 def get_local_ip() -> str:
@@ -173,14 +188,17 @@ class App:
                 meter.pack(side="left", padx=4)
                 meter_bar = meter.create_rectangle(0, 0, 0, 16, fill="green", width=0)
 
-                # Gain slider: 0-200%, affects BOTH the recording and
-                # what other guests hear (see sfu/room.py GainAdjustableAudioTrack)
-                # - not just a live-only mute.
-                var = tk.DoubleVar(value=info["gain"] * 100)
+                # Gain slider in dB (-20dB to +30dB ~= 0.1x to ~32x
+                # linear) - replaces the old 0-200% range, which
+                # confirmed in real testing could not boost quiet mic
+                # input to an audible level. Affects BOTH the recording
+                # and what other guests hear (see sfu/room.py
+                # GainAdjustableAudioTrack) - not just a live-only mute.
+                var = tk.DoubleVar(value=linear_to_db(info["gain"]))
                 slider = tk.Scale(
-                    row, from_=0, to=200, orient="horizontal", length=120,
-                    variable=var, showvalue=True, resolution=5,
-                    command=lambda val, i=identity: self.engine.set_gain(i, float(val) / 100.0),
+                    row, from_=-20, to=30, orient="horizontal", length=140,
+                    variable=var, showvalue=True, resolution=1, label="dB",
+                    command=lambda val, i=identity: self.engine.set_gain(i, db_to_linear(float(val))),
                 )
                 slider.pack(side="left", padx=4)
 
