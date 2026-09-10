@@ -22,13 +22,43 @@ the server ever initiates renegotiation, never the guest.
 import asyncio
 import logging
 
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceCandidate, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamTrack
+from aiortc.sdp import candidate_from_sdp
 
 from recorder.session_recorder import SessionRecorder
 
 logger = logging.getLogger("resync_live.sfu")
+
+
+def parse_browser_candidate(candidate_dict: dict) -> RTCIceCandidate | None:
+    """
+    Converts a browser's RTCIceCandidate JSON (from pc.onicecandidate,
+    relayed over our signaling channel) into an aiortc RTCIceCandidate
+    that pc.addIceCandidate() can accept. aiortc does not take the raw
+    candidate string directly - candidate_from_sdp parses the "candidate:
+    ..." line into its component fields (foundation, priority, ip,
+    port, type, etc.), and sdpMid/sdpMLineIndex have to be set
+    separately since they're not part of that string, they're sibling
+    fields on the browser's candidate object.
+
+    This is the fix for a confirmed, real bug: without relaying trickle
+    candidates like this, real browsers (which discover candidates
+    asynchronously by default) had no way to tell the server about any
+    candidate found after the initial offer - meaning the media
+    connection could fail to ever establish even though signaling
+    completed, exactly matching what was observed in testing (frames
+    never arrived, even on a single machine with no network in the way).
+    """
+    candidate_str = candidate_dict.get("candidate", "")
+    if not candidate_str:
+        return None  # empty string/None candidate = end-of-candidates marker
+    value = candidate_str.split("candidate:", 1)[-1]
+    candidate = candidate_from_sdp(value)
+    candidate.sdpMid = candidate_dict.get("sdpMid")
+    candidate.sdpMLineIndex = candidate_dict.get("sdpMLineIndex")
+    return candidate
 
 
 class GainAdjustableAudioTrack(MediaStreamTrack):
@@ -225,6 +255,21 @@ class Room:
             return
         await guest.pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type="answer"))
         guest.answer_ready.set()
+
+    async def handle_ice_candidate(self, identity: str, candidate_dict: dict):
+        """A trickle ICE candidate discovered by the guest's browser
+        after their initial offer was already sent - see
+        parse_browser_candidate for why this exists at all."""
+        guest = self.guests.get(identity)
+        if guest is None:
+            logger.warning("ICE candidate from unknown guest %s", identity)
+            return
+        try:
+            candidate = parse_browser_candidate(candidate_dict)
+            if candidate is not None:
+                await guest.pc.addIceCandidate(candidate)
+        except Exception:
+            logger.exception("Failed to add ICE candidate from %s: %r", identity, candidate_dict)
 
     async def set_gain(self, identity: str, gain: float):
         """

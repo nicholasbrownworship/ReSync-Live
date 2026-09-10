@@ -93,6 +93,9 @@ class ResyncLiveEngine:
                     elif msg_type == "answer" and identity is not None:
                         await self.room.handle_renegotiation_answer(identity, msg["sdp"])
 
+                    elif msg_type == "ice_candidate" and identity is not None:
+                        await self.room.handle_ice_candidate(identity, msg.get("candidate") or {})
+
                     else:
                         logger.warning("Unexpected message type=%s identity=%s", msg_type, identity)
             finally:

@@ -254,6 +254,20 @@
             renderTrack(mid, trackEvent);
           };
 
+          // Send every locally-discovered network path to the server AS
+          // IT'S FOUND, not just what's in the initial offer - browsers
+          // discover candidates asynchronously by default (trickle ICE),
+          // and without relaying these, the server would never learn
+          // about anything found after the first offer was sent. This
+          // was a confirmed real bug: without it, media could fail to
+          // connect even though signaling completed successfully.
+          pc.onicecandidate = (event) => {
+            ws.send(JSON.stringify({
+              type: "ice_candidate",
+              candidate: event.candidate ? event.candidate.toJSON() : null,
+            }));
+          };
+
           // The REAL signal of whether media is actually flowing is
           // connectionState, not "we finished exchanging an offer/
           // answer" - those are different things in WebRTC, and
@@ -289,6 +303,15 @@
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription.sdp }));
+
+        } else if (msg.type === "ice_candidate") {
+          if (msg.candidate) {
+            try {
+              await pc.addIceCandidate(msg.candidate);
+            } catch (err) {
+              console.warn("Failed to add remote ICE candidate:", err);
+            }
+          }
 
         } else if (msg.type === "track_info") {
           handleTrackInfo(msg);
