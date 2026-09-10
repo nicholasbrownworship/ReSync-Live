@@ -71,6 +71,30 @@ class SessionRecorder:
 
         recorder = MediaRecorder(path)
         recorder.addTrack(counted)
+
+        if track.kind == "video":
+            # Confirmed real bug: aiortc's MediaRecorder creates its
+            # libx264 stream with NO explicit bitrate/quality settings
+            # (verified by reading its source directly), so it falls
+            # back to FFmpeg's conservative general-purpose defaults -
+            # not tuned for quality. There's no public option to
+            # configure this, so this reaches into MediaRecorder's
+            # internal track mapping (a private, name-mangled attribute)
+            # to set it directly on the underlying PyAV stream before
+            # any frames are encoded. Verified this actually changes
+            # output size substantially (not a silent no-op) via a
+            # direct before/after comparison on identical test content.
+            # STATUS: relies on aiortc's internal implementation detail
+            # (MediaRecorder._MediaRecorder__tracks) that could break on
+            # a future aiortc version - if recordings mysteriously fail
+            # to start after an aiortc upgrade, check this first.
+            try:
+                stream = recorder._MediaRecorder__tracks[counted].stream
+                stream.codec_context.bit_rate = 4_000_000  # 4 Mbps - well above libx264's conservative default
+                stream.codec_context.options = {"crf": "18", "preset": "medium"}
+            except Exception:
+                logger.exception("Could not set high-quality video encoding options - falling back to aiortc's defaults")
+
         self._recorders[key] = recorder
         await recorder.start()
 

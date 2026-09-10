@@ -211,9 +211,16 @@ class App:
                 }
 
             # Update the meter every cycle, for every row (new or existing).
+            # Uses a dB scale, not linear - a confirmed real bug: normal
+            # speech peaks around 10-30% of full digital scale, so a
+            # LINEAR meter makes healthy audio look like near-silence.
+            # Real audio meters are logarithmic for exactly this reason.
             level = info.get("level", 0.0)
-            width = max(0, min(80, int(level * 80)))
-            color = "red" if level > 0.9 else ("orange" if level > 0.7 else "green")
+            level_db = 20 * math.log10(level) if level > 0 else -60.0
+            # Map -40dB (quiet) to 0dB (full scale) onto the 0-80px bar.
+            fraction = max(0.0, min(1.0, (level_db + 40) / 40))
+            width = int(fraction * 80)
+            color = "red" if level_db > -3 else ("orange" if level_db > -12 else "green")
             row_widgets = self.guest_rows[identity]
             row_widgets["meter"].coords(row_widgets["meter_bar"], 0, 0, width, 16)
             row_widgets["meter"].itemconfig(row_widgets["meter_bar"], fill=color)

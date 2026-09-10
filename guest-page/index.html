@@ -294,6 +294,7 @@
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
       statusEl.textContent = "Requesting camera/mic...";
+      let actualResText = "";
       try {
         const chosenCamera = document.getElementById("cameraSelect").value;
         const chosenMic = document.getElementById("micSelect").value;
@@ -302,6 +303,17 @@
           audio: audioConstraintsFor(chosenMic),
         });
         refreshDeviceList(); // labels are only populated AFTER permission is granted
+
+        // Report what the camera ACTUALLY delivered, not just what was
+        // requested - "ideal" constraints are hints, not guarantees, and
+        // this is the only way to know if a resolution complaint is a
+        // capture-hardware limit or something else.
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          const settings = videoTrack.getSettings();
+          actualResText = ` (camera delivering ${settings.width}x${settings.height})`;
+          console.log(`Actual camera resolution: ${settings.width}x${settings.height} @ ${settings.frameRate}fps`);
+        }
       } catch (err) {
         statusEl.textContent = "Could not access camera/mic: " + err.message;
         return;
@@ -378,7 +390,7 @@
           pc.onconnectionstatechange = () => {
             console.log("connectionState:", pc.connectionState);
             if (pc.connectionState === "connected") {
-              statusEl.textContent = "Connected as " + displayName;
+              statusEl.textContent = "Connected as " + displayName + actualResText;
             } else if (pc.connectionState === "connecting") {
               statusEl.textContent = "Establishing media connection...";
             } else if (pc.connectionState === "failed") {
