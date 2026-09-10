@@ -4,14 +4,42 @@ Per-session recording, built directly on aiortc's own MediaRecorder
 re-implementing that encoding loop ourselves — see docs/ARCHITECTURE.md
 for why re-writing that would be redundant risk, not more self-reliant.
 
-STATUS: first draft, not yet run against real tracks.
+STATUS: recordings have come back EMPTY in real testing (files exist,
+zero actual content) - root cause not yet found. Added frame-count
+logging below specifically to answer one question: are frames even
+reaching this code at all, or is nothing arriving in the first place?
+That distinguishes a media-connectivity problem from a muxing/encoding
+problem, which need completely different fixes.
 """
 import logging
 import os
 
 from aiortc.contrib.media import MediaRecorder
+from aiortc.mediastreams import MediaStreamTrack
 
 logger = logging.getLogger("resync_live.recorder")
+
+
+class _FrameCountingTrack(MediaStreamTrack):
+    """Transparent pass-through that logs frame arrival - diagnostic
+    only, added specifically to answer whether real media frames are
+    reaching the recorder at all."""
+
+    def __init__(self, source_track: MediaStreamTrack, label: str):
+        super().__init__()
+        self.kind = source_track.kind
+        self.source_track = source_track
+        self.label = label
+        self.count = 0
+
+    async def recv(self):
+        frame = await self.source_track.recv()
+        self.count += 1
+        if self.count == 1:
+            logger.info("FIRST %s frame received for %s", self.kind, self.label)
+        elif self.count % 150 == 0:
+            logger.info("%d %s frames received so far for %s", self.count, self.kind, self.label)
+        return frame
 
 
 class SessionRecorder:
@@ -38,8 +66,11 @@ class SessionRecorder:
         path = os.path.join(self.session_dir, f"{self._safe_name(identity)}_{track.kind}.{ext}")
         logger.info("Recording %s track for %s -> %s", track.kind, identity, path)
 
+        relayed = relay.subscribe(track)
+        counted = _FrameCountingTrack(relayed, label=f"{identity}_{track.kind}")
+
         recorder = MediaRecorder(path)
-        recorder.addTrack(relay.subscribe(track))
+        recorder.addTrack(counted)
         self._recorders[key] = recorder
         await recorder.start()
 

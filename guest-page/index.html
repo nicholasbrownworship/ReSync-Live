@@ -46,6 +46,12 @@
   <label for="passwordInput">Password (if the host set one)</label>
   <input id="passwordInput" type="password" />
 
+  <label for="cameraSelect">Camera</label>
+  <select id="cameraSelect"><option value="">Default camera</option></select>
+
+  <label for="micSelect">Microphone</label>
+  <select id="micSelect"><option value="">Default microphone</option></select>
+
   <br />
   <button id="joinBtn">Join</button>
   <div id="status"></div>
@@ -57,7 +63,43 @@
       if (window.location.host) {
         document.getElementById("serverInput").value = window.location.host;
       }
+      refreshDeviceList();
     });
+
+    async function refreshDeviceList() {
+      // Device LABELS are blank until permission has been granted at
+      // least once for this page - devices still show up as
+      // selectable, just unlabeled ("Camera 1" etc.) on first load.
+      // This is a browser privacy restriction, not a bug here.
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cameraSelect = document.getElementById("cameraSelect");
+        const micSelect = document.getElementById("micSelect");
+        const priorCamera = cameraSelect.value;
+        const priorMic = micSelect.value;
+        cameraSelect.innerHTML = '<option value="">Default camera</option>';
+        micSelect.innerHTML = '<option value="">Default microphone</option>';
+
+        let camCount = 0, micCount = 0;
+        for (const device of devices) {
+          const opt = document.createElement("option");
+          opt.value = device.deviceId;
+          if (device.kind === "videoinput") {
+            camCount++;
+            opt.textContent = device.label || ("Camera " + camCount);
+            cameraSelect.appendChild(opt);
+          } else if (device.kind === "audioinput") {
+            micCount++;
+            opt.textContent = device.label || ("Microphone " + micCount);
+            micSelect.appendChild(opt);
+          }
+        }
+        cameraSelect.value = priorCamera;
+        micSelect.value = priorMic;
+      } catch (err) {
+        console.warn("Could not enumerate devices:", err);
+      }
+    }
 
     const statusEl = document.getElementById("status");
     const remoteGuestsEl = document.getElementById("remoteGuests");
@@ -154,7 +196,13 @@
       statusEl.textContent = "Requesting camera/mic...";
       let stream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        const chosenCamera = document.getElementById("cameraSelect").value;
+        const chosenMic = document.getElementById("micSelect").value;
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: chosenCamera ? { deviceId: { exact: chosenCamera } } : true,
+          audio: chosenMic ? { deviceId: { exact: chosenMic } } : true,
+        });
+        refreshDeviceList(); // labels are only populated AFTER permission is granted
       } catch (err) {
         statusEl.textContent = "Could not access camera/mic: " + err.message;
         return;
