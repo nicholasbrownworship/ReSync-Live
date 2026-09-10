@@ -76,6 +76,11 @@ class GainAdjustableAudioTrack(MediaStreamTrack):
     adjustment once run against real audio (sample format assumptions:
     16-bit signed integer PCM, which is what aiortc/WebRTC audio uses,
     but not independently re-verified here).
+
+    Also tracks a live peak level (0.0-1.0, with decay) so the host app
+    can show a real level meter - added because there was previously no
+    way to see how loud a guest actually was before recording them,
+    leading to guessing at gain values blind.
     """
     kind = "audio"
 
@@ -83,18 +88,24 @@ class GainAdjustableAudioTrack(MediaStreamTrack):
         super().__init__()
         self.source_track = source_track
         self.gain = 1.0  # 1.0 = unchanged, 0.0 = silent, >1.0 = boosted
+        self.level = 0.0  # peak level with decay, 0.0-1.0, for VU-meter display
 
     async def recv(self):
         frame = await self.source_track.recv()
-        if self.gain == 1.0:
-            return frame
 
         import numpy as np
 
         for plane in frame.planes:
-            samples = np.frombuffer(bytes(plane), dtype=np.int16).astype(np.float32)
-            samples = np.clip(samples * self.gain, -32768, 32767).astype(np.int16)
-            plane.update(samples.tobytes())
+            samples = np.frombuffer(bytes(plane), dtype=np.int16)
+            if len(samples) > 0:
+                peak = float(np.abs(samples).max()) / 32768.0
+                # Decay rather than snap to the new peak each frame -
+                # otherwise the meter would flicker unreadably fast at
+                # normal frame rates.
+                self.level = max(peak, self.level * 0.7)
+            if self.gain != 1.0:
+                adjusted = np.clip(samples.astype(np.float32) * self.gain, -32768, 32767).astype(np.int16)
+                plane.update(adjusted.tobytes())
         return frame
 
 
@@ -291,3 +302,20 @@ class Room:
             await self.recorder.stop_guest(identity)
             self._renegotiation_locks.pop(identity, None)
             logger.info("Removed guest %s", identity)
+
+    async def stop_all(self):
+        """
+        Cleanly finalizes every still-connected guest's recording.
+        Confirmed real bug this fixes: MP4 files need their 'moov atom'
+        (duration/seek metadata) written at the END, once total length
+        is known - if the app stops (or the session is ended) while a
+        guest is still connected, that guest's MediaRecorder.stop() was
+        never being called, leaving the file without that atom. Windows'
+        built-in players are strict about this and would refuse to open
+        such a file even though the raw video data inside is intact -
+        verified by inspecting a properly-stopped recording's moov atom
+        directly, confirming this is what "stopped properly" looks like
+        and what was missing otherwise.
+        """
+        for identity in list(self.guests.keys()):
+            await self.remove_guest(identity)

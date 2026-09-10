@@ -35,7 +35,7 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("ReSync Live")
-        self.root.geometry("460x480")
+        self.root.geometry("560x480")
 
         self.output_dir = DEFAULT_OUTPUT_DIR
         self.engine = ResyncLiveEngine(output_dir=self.output_dir, port=PORT)
@@ -142,15 +142,23 @@ class App:
             if identity not in self.guest_rows:
                 row = tk.Frame(self.guests_frame)
                 row.pack(fill="x", pady=2)
-                name_label = tk.Label(row, text=info["display_name"], width=14, anchor="w")
+                name_label = tk.Label(row, text=info["display_name"], width=12, anchor="w")
                 name_label.pack(side="left")
+
+                # Real-time level meter - added because there was
+                # previously no way to see how loud a guest actually
+                # was before recording them, so gain got set blind.
+                meter = tk.Canvas(row, width=80, height=16, bg="black",
+                                   highlightthickness=1, highlightbackground="#444")
+                meter.pack(side="left", padx=4)
+                meter_bar = meter.create_rectangle(0, 0, 0, 16, fill="green", width=0)
 
                 # Gain slider: 0-200%, affects BOTH the recording and
                 # what other guests hear (see sfu/room.py GainAdjustableAudioTrack)
                 # - not just a live-only mute.
                 var = tk.DoubleVar(value=info["gain"] * 100)
                 slider = tk.Scale(
-                    row, from_=0, to=200, orient="horizontal", length=140,
+                    row, from_=0, to=200, orient="horizontal", length=120,
                     variable=var, showvalue=True, resolution=5,
                     command=lambda val, i=identity: self.engine.set_gain(i, float(val) / 100.0),
                 )
@@ -159,12 +167,25 @@ class App:
                 kick_btn = tk.Button(row, text="Kick", width=6, fg="red",
                                       command=lambda i=identity: self.engine.kick(i))
                 kick_btn.pack(side="left", padx=4)
-                self.guest_rows[identity] = {"frame": row, "slider": slider, "var": var}
+                self.guest_rows[identity] = {
+                    "frame": row, "slider": slider, "var": var,
+                    "meter": meter, "meter_bar": meter_bar,
+                }
+
+            # Update the meter every cycle, for every row (new or existing).
+            level = info.get("level", 0.0)
+            width = max(0, min(80, int(level * 80)))
+            color = "red" if level > 0.9 else ("orange" if level > 0.7 else "green")
+            row_widgets = self.guest_rows[identity]
+            row_widgets["meter"].coords(row_widgets["meter_bar"], 0, 0, width, 16)
+            row_widgets["meter"].itemconfig(row_widgets["meter_bar"], fill=color)
 
     def _poll_status(self):
         if self.running:
             self._rebuild_guest_rows(self.engine.connected_guests())
-        self.root.after(1000, self._poll_status)
+        # Faster than the original 1000ms so the level meter actually
+        # feels live rather than visibly stepping once a second.
+        self.root.after(200, self._poll_status)
 
 
 if __name__ == "__main__":

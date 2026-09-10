@@ -158,13 +158,32 @@ class ResyncLiveEngine:
             self.startup_error = f"{type(e).__name__}: {e}"
 
     def stop(self):
+        # Finalize every still-connected guest's recording BEFORE tearing
+        # anything else down - a confirmed real bug: MP4 files need
+        # their finalizing metadata written at stop() time, and without
+        # this, stopping the app while someone was still connected left
+        # their video file broken (Windows' native players refuse it,
+        # even though the raw data is intact). Blocking briefly here is
+        # the tradeoff for not silently losing/corrupting a recording.
+        if self._loop is not None and self.room is not None:
+            try:
+                future = asyncio.run_coroutine_threadsafe(self.room.stop_all(), self._loop)
+                future.result(timeout=5)
+            except Exception:
+                logger.exception("Error finalizing recordings during stop")
+
         if self._loop is not None:
+            loop = self._loop  # captured directly - referencing self._loop
+            # lazily inside the callback below caused a real race: it
+            # could already be None by the time the callback actually
+            # runs, since self._loop is cleared further down in this
+            # same method.
             if self._server_task is not None:
                 # Wait for the task to actually finish cancelling before
                 # stopping the loop, so it doesn't get torn down mid-flight
                 # (which asyncio logs as a "Task was destroyed" warning -
                 # harmless, but noisy, and easy to avoid properly).
-                self._server_task.add_done_callback(lambda _: self._loop.stop())
+                self._server_task.add_done_callback(lambda _: loop.stop())
                 self._loop.call_soon_threadsafe(self._server_task.cancel)
             else:
                 self._loop.call_soon_threadsafe(self._loop.stop)
@@ -175,7 +194,7 @@ class ResyncLiveEngine:
         self._server_task = None
 
     def connected_guests(self) -> dict[str, dict]:
-        """Returns {identity: {display_name, gain}} - see the
+        """Returns {identity: {display_name, gain, level}} - see the
         thread-safety note above; unchanged reasoning applies here."""
         if self.room is None:
             return {}
@@ -183,6 +202,7 @@ class ResyncLiveEngine:
             identity: {
                 "display_name": g.display_name,
                 "gain": g.audio_gain_track.gain if g.audio_gain_track else 1.0,
+                "level": g.audio_gain_track.level if g.audio_gain_track else 0.0,
             }
             for identity, g in self.room.guests.items()
         }
