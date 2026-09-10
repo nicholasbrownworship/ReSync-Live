@@ -121,6 +121,33 @@
       return constraints;
     }
 
+    async function applyVideoSenderQuality(sender) {
+      // Real, separate WebRTC behavior from capture constraints: browsers
+      // automatically downscale OUTGOING video resolution based on their
+      // own bandwidth estimation, independent of what getUserMedia
+      // captured. This explicitly raises the ceiling and disables that
+      // automatic downscaling, since a simple local/LAN connection
+      // shouldn't need it, and the browser's default assumptions may be
+      // too conservative for one. STATUS: this is a well-documented,
+      // standard WebRTC API for exactly this problem, but not verified
+      // against a real browser+camera here - only that the call itself
+      // is correctly structured per spec.
+      if (!sender) return;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].scaleResolutionDownBy = 1;
+        const res = document.getElementById("resolutionSelect").value;
+        const bitrateMap = { "480": 1_500_000, "720": 2_500_000, "1080": 4_500_000 };
+        params.encodings[0].maxBitrate = bitrateMap[res] || 2_500_000;
+        await sender.setParameters(params);
+      } catch (err) {
+        console.warn("Could not apply video sender quality parameters:", err);
+      }
+    }
+
     function audioConstraintsFor(deviceId) {
       // Confirmed real cause of "boosted gain still barely audible":
       // Chrome/Firefox/Safari all enable echoCancellation, noiseSuppression,
@@ -235,6 +262,7 @@
         stream.addTrack(newTrack);
         const selfVideo = document.querySelector("#selfPreviewContainer video");
         if (selfVideo) selfVideo.srcObject = stream;
+        await applyVideoSenderQuality(videoSender);
         statusEl.textContent = "Switched camera.";
       } catch (err) {
         statusEl.textContent = "Could not switch camera: " + err.message;
@@ -257,6 +285,7 @@
         stream.addTrack(newTrack);
         const selfVideo = document.querySelector("#selfPreviewContainer video");
         if (selfVideo) selfVideo.srcObject = stream;
+        await applyVideoSenderQuality(videoSender);
         statusEl.textContent = "Switched video quality.";
       } catch (err) {
         statusEl.textContent = "Could not switch video quality: " + err.message;
@@ -358,6 +387,7 @@
             if (track.kind === "video") videoSender = sender;
             else if (track.kind === "audio") audioSender = sender;
           });
+          applyVideoSenderQuality(videoSender);
 
           pc.ontrack = (trackEvent) => {
             const mid = trackEvent.transceiver ? trackEvent.transceiver.mid : null;
@@ -391,6 +421,7 @@
             console.log("connectionState:", pc.connectionState);
             if (pc.connectionState === "connected") {
               statusEl.textContent = "Connected as " + displayName + actualResText;
+              applyVideoSenderQuality(videoSender); // reapply once fully connected, as a safety net
             } else if (pc.connectionState === "connecting") {
               statusEl.textContent = "Establishing media connection...";
             } else if (pc.connectionState === "failed") {
