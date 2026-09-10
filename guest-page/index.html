@@ -114,6 +114,7 @@
     const guestTiles = {};
 
     let audioCtx; // created on Join click (a user gesture), required by browsers
+    let stream, pc, videoSender, audioSender; // hoisted so device-switch listeners (below) can reach them after joining
 
     function getOrCreateTile(identity, displayName) {
       if (guestTiles[identity]) return guestTiles[identity];
@@ -181,6 +182,49 @@
       }
     }
 
+    // Switch camera/mic WHILE ALREADY CONNECTED, not just before joining -
+    // uses RTCRtpSender.replaceTrack(), the standard WebRTC mechanism for
+    // this, which does NOT require renegotiation (the server doesn't need
+    // to do anything differently; it keeps receiving the same track,
+    // just with different underlying content).
+    document.getElementById("cameraSelect").addEventListener("change", async () => {
+      if (!pc || !videoSender) return; // not connected yet - selection just applies at Join time
+      const deviceId = document.getElementById("cameraSelect").value;
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId } } : true,
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        await videoSender.replaceTrack(newTrack);
+        stream.getVideoTracks().forEach((t) => t.stop());
+        stream.getVideoTracks().forEach((t) => stream.removeTrack(t));
+        stream.addTrack(newTrack);
+        const selfVideo = document.querySelector("#selfPreviewContainer video");
+        if (selfVideo) selfVideo.srcObject = stream;
+        statusEl.textContent = "Switched camera.";
+      } catch (err) {
+        statusEl.textContent = "Could not switch camera: " + err.message;
+      }
+    });
+
+    document.getElementById("micSelect").addEventListener("change", async () => {
+      if (!pc || !audioSender) return;
+      const deviceId = document.getElementById("micSelect").value;
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        });
+        const newTrack = newStream.getAudioTracks()[0];
+        await audioSender.replaceTrack(newTrack);
+        stream.getAudioTracks().forEach((t) => t.stop());
+        stream.getAudioTracks().forEach((t) => stream.removeTrack(t));
+        stream.addTrack(newTrack);
+        statusEl.textContent = "Switched microphone.";
+      } catch (err) {
+        statusEl.textContent = "Could not switch microphone: " + err.message;
+      }
+    });
+
     document.getElementById("joinBtn").addEventListener("click", async () => {
       const address = document.getElementById("serverInput").value.trim();
       const displayName = document.getElementById("nameInput").value.trim() || identity;
@@ -194,7 +238,6 @@
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
       statusEl.textContent = "Requesting camera/mic...";
-      let stream;
       try {
         const chosenCamera = document.getElementById("cameraSelect").value;
         const chosenMic = document.getElementById("micSelect").value;
@@ -233,7 +276,6 @@
         statusEl.textContent = "Warning: no audio track (microphone may be unavailable).";
       }
 
-      let pc;
       const ws = new WebSocket("wss://" + address);
 
       ws.onopen = () => { statusEl.textContent = "Waiting for session details..."; };
@@ -243,7 +285,11 @@
 
         if (msg.type === "config") {
           pc = new RTCPeerConnection({ iceServers: msg.ice_servers || [] });
-          stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+          stream.getTracks().forEach((track) => {
+            const sender = pc.addTrack(track, stream);
+            if (track.kind === "video") videoSender = sender;
+            else if (track.kind === "audio") audioSender = sender;
+          });
 
           pc.ontrack = (trackEvent) => {
             const mid = trackEvent.transceiver ? trackEvent.transceiver.mid : null;

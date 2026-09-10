@@ -71,16 +71,21 @@ class GainAdjustableAudioTrack(MediaStreamTrack):
     the point is to prevent clipping/peaking from ever being captured
     in the first place, not just to control the live monitor mix.
 
-    STATUS: first draft. Multiplying raw PCM samples in-place via numpy
-    on each frame's plane data is the part most likely to need
-    adjustment once run against real audio (sample format assumptions:
-    16-bit signed integer PCM, which is what aiortc/WebRTC audio uses,
-    but not independently re-verified here).
+    STATUS: rewritten after a confirmed real bug - the first version
+    assumed incoming frames were always 16-bit signed integer PCM. That
+    assumption happened to hold in testing because the test tracks were
+    synthetic ones this code fully controlled the format of; it was
+    never actually verified against what aiortc's real Opus decoder
+    produces for genuine microphone audio, and evidently did NOT hold -
+    reported symptom was a level meter reading constantly near-maximum
+    on audio that was barely audible, and gain adjustments having no
+    real effect - exactly what misinterpreting the byte layout would
+    cause. Now uses PyAV's format-aware to_ndarray()/from_ndarray(),
+    which handle whatever the actual sample format/layout is, integer
+    or float, planar or packed, instead of assuming one.
 
     Also tracks a live peak level (0.0-1.0, with decay) so the host app
-    can show a real level meter - added because there was previously no
-    way to see how loud a guest actually was before recording them,
-    leading to guessing at gain values blind.
+    can show a real level meter.
     """
     kind = "audio"
 
@@ -89,24 +94,56 @@ class GainAdjustableAudioTrack(MediaStreamTrack):
         self.source_track = source_track
         self.gain = 1.0  # 1.0 = unchanged, 0.0 = silent, >1.0 = boosted
         self.level = 0.0  # peak level with decay, 0.0-1.0, for VU-meter display
+        self._logged_format = False
 
     async def recv(self):
+        import numpy as np
+        import av
+
         frame = await self.source_track.recv()
 
-        import numpy as np
+        if not self._logged_format:
+            # Real diagnostic data, not a guess - logs whatever format
+            # actually shows up the first time, so if something is
+            # still wrong next time, we have facts instead of another
+            # assumption to test.
+            logger.info(
+                "Audio frame format=%s layout=%s rate=%d samples=%d",
+                frame.format.name, frame.layout.name, frame.sample_rate, frame.samples,
+            )
+            self._logged_format = True
 
-        for plane in frame.planes:
-            samples = np.frombuffer(bytes(plane), dtype=np.int16)
-            if len(samples) > 0:
-                peak = float(np.abs(samples).max()) / 32768.0
-                # Decay rather than snap to the new peak each frame -
-                # otherwise the meter would flicker unreadably fast at
-                # normal frame rates.
-                self.level = max(peak, self.level * 0.7)
-            if self.gain != 1.0:
-                adjusted = np.clip(samples.astype(np.float32) * self.gain, -32768, 32767).astype(np.int16)
-                plane.update(adjusted.tobytes())
-        return frame
+        array = frame.to_ndarray()
+        if array.size == 0:
+            return frame
+
+        is_float = np.issubdtype(array.dtype, np.floating)
+        if is_float:
+            peak = float(np.abs(array).max())  # float PCM is already -1.0 to 1.0
+        else:
+            max_val = float(np.iinfo(array.dtype).max)
+            peak = float(np.abs(array.astype(np.float64)).max()) / max_val
+        # Decay rather than snap to the new peak each frame - otherwise
+        # the meter would flicker unreadably fast at normal frame rates.
+        self.level = max(peak, self.level * 0.7)
+
+        if self.gain == 1.0:
+            return frame
+
+        scaled = array.astype(np.float64) * self.gain
+        if is_float:
+            scaled = np.clip(scaled, -1.0, 1.0)
+        else:
+            info = np.iinfo(array.dtype)
+            scaled = np.clip(scaled, info.min, info.max)
+        new_array = scaled.astype(array.dtype)
+
+        new_frame = av.AudioFrame.from_ndarray(new_array, format=frame.format.name, layout=frame.layout.name)
+        new_frame.sample_rate = frame.sample_rate
+        new_frame.pts = frame.pts
+        if frame.time_base is not None:
+            new_frame.time_base = frame.time_base
+        return new_frame
 
 
 class GuestState:
