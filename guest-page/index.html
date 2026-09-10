@@ -121,6 +121,24 @@
       return constraints;
     }
 
+    function audioConstraintsFor(deviceId) {
+      // Confirmed real cause of "boosted gain still barely audible":
+      // Chrome/Firefox/Safari all enable echoCancellation, noiseSuppression,
+      // and autoGainControl by DEFAULT on any getUserMedia audio capture -
+      // this happens BEFORE the audio ever reaches this app, so digital
+      // gain applied afterward can't recover what the browser's own
+      // processing already suppressed. Explicitly disabling all three
+      // gives the actual raw mic signal instead of fighting the browser's
+      // own (possibly aggressive) processing of it.
+      const constraints = {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      };
+      if (deviceId) constraints.deviceId = { exact: deviceId };
+      return constraints;
+    }
+
     // mid -> {identity, display_name, kind}, filled in from "track_info"
     // messages the server sends after every (re)negotiation.
     const trackInfoByMid = {};
@@ -250,7 +268,7 @@
       const deviceId = document.getElementById("micSelect").value;
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+          audio: audioConstraintsFor(deviceId),
         });
         const newTrack = newStream.getAudioTracks()[0];
         await audioSender.replaceTrack(newTrack);
@@ -281,7 +299,7 @@
         const chosenMic = document.getElementById("micSelect").value;
         stream = await navigator.mediaDevices.getUserMedia({
           video: videoConstraintsFor(chosenCamera),
-          audio: chosenMic ? { deviceId: { exact: chosenMic } } : true,
+          audio: audioConstraintsFor(chosenMic),
         });
         refreshDeviceList(); // labels are only populated AFTER permission is granted
       } catch (err) {
