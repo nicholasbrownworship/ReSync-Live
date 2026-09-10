@@ -102,7 +102,13 @@ class SessionRecorder:
             # to start after an aiortc upgrade, check this first.
             try:
                 stream = recorder._MediaRecorder__tracks[counted].stream
-                stream.codec_context.bit_rate = 4_000_000  # 4 Mbps - well above libx264's conservative default
+                # No bit_rate cap here on purpose - CRF mode picks
+                # however many bits the content actually needs for the
+                # target quality, and a competing bitrate ceiling can
+                # override that and force it back down, undoing the
+                # quality target for detailed content like real 1080p
+                # video. Confirmed as the actual cause after CRF alone
+                # was insufficient with a 4 Mbps cap still in place.
                 stream.codec_context.options = {"crf": "18", "preset": "medium"}
             except Exception:
                 logger.exception("Could not set high-quality video encoding options - falling back to aiortc's defaults")
