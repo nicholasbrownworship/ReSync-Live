@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import ssl
+import sys
 import threading
 import time
 
@@ -18,6 +19,20 @@ from config import Config
 from paths import bundled_resource_path
 from signaling.ws_server import serve
 from sfu.room import Room
+
+if sys.platform == "win32":
+    # Windows' default ProactorEventLoop logs a harmless but noisy
+    # "Exception in callback _ProactorBasePipeTransport._call_connection_lost"
+    # / ConnectionResetError [WinError 10054] whenever an SSL connection
+    # is closed abruptly by the other side (e.g. a guest's browser tab
+    # closing) - well-documented across many unrelated projects
+    # (uvicorn, ComfyUI, others) as cosmetic noise, not a real failure.
+    # SelectorEventLoop doesn't have this issue. NOTE: an older,
+    # unrelated bug where ProactorEventLoop broke UDP entirely on
+    # Windows was specific to Python 3.8 and is already fixed in the
+    # 3.11 this project builds against - this switch is about quieting
+    # log noise, not a fix for that older, different problem.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 logger = logging.getLogger("resync_live.engine")
 
