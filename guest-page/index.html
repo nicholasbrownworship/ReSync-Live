@@ -125,13 +125,13 @@
       // Real, separate WebRTC behavior from capture constraints: browsers
       // automatically downscale OUTGOING video resolution based on their
       // own bandwidth estimation, independent of what getUserMedia
-      // captured. This explicitly raises the ceiling and disables that
-      // automatic downscaling, since a simple local/LAN connection
-      // shouldn't need it, and the browser's default assumptions may be
-      // too conservative for one. STATUS: this is a well-documented,
-      // standard WebRTC API for exactly this problem, but not verified
-      // against a real browser+camera here - only that the call itself
-      // is correctly structured per spec.
+      // captured. Confirmed via real testing that scaleResolutionDownBy=1
+      // and a higher maxBitrate ceiling were NOT enough on their own -
+      // the missing piece is degradationPreference, which defaults to
+      // "balanced" (the encoder is still free to sacrifice resolution as
+      // part of a "balanced" tradeoff even with those other settings in
+      // place). Setting it to "maintain-resolution" explicitly tells the
+      // encoder to degrade FRAMERATE instead, never resolution.
       if (!sender) return;
       try {
         const params = sender.getParameters();
@@ -139,6 +139,7 @@
           params.encodings = [{}];
         }
         params.encodings[0].scaleResolutionDownBy = 1;
+        params.degradationPreference = "maintain-resolution";
         const res = document.getElementById("resolutionSelect").value;
         const bitrateMap = { "480": 1_500_000, "720": 2_500_000, "1080": 4_500_000 };
         params.encodings[0].maxBitrate = bitrateMap[res] || 2_500_000;
