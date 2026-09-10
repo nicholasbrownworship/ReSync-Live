@@ -27,7 +27,15 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build executable
-        run: pyinstaller --onefile --windowed --name "ReSyncLive" app.py
+        # --windowed removed FOR NOW (this build only) - it hides the
+        # console, which meant a startup failure had nowhere to show an
+        # error at all. In-app error surfacing was added in app.py/
+        # server/engine.py, but keeping the console visible too is a
+        # safety net until that's proven to catch everything.
+        # --add-data bundles the guest join page into the exe - this
+        # was a confirmed real bug: PyInstaller does not bundle non-
+        # Python data files unless told to.
+        run: pyinstaller --onefile --name "ReSyncLive" --add-data "guest-page/index.html;guest-page" app.py
 
       - name: Upload build artifact (always, even outside a tag push)
         uses: actions/upload-artifact@v4

@@ -100,17 +100,37 @@ class App:
             self.status_label.config(text="Stopped", fg="gray")
             self.toggle_btn.config(text="Start Session")
             self.password_entry.config(state="normal")
+            self.running = False
         else:
-            # Push whatever's in the password field into Config right
-            # before starting, so the field actually takes effect this
-            # session rather than requiring a restart.
             Config.SESSION_PASSWORD = self.password_var.get()
             os.makedirs(self.output_dir, exist_ok=True)
             self.engine.start()
+            self.status_label.config(text="Starting...", fg="orange")
+            self.toggle_btn.config(state="disabled")
+            self.password_entry.config(state="disabled")
+            # start() only spawns a background thread and returns
+            # immediately - it does NOT mean the server actually came
+            # up successfully. Check shortly after, instead of assuming
+            # success (a real bug found the hard way: a startup failure
+            # was previously silent, with the GUI claiming "Running"
+            # regardless of whether the server ever actually bound the
+            # port).
+            self.root.after(1500, self._check_startup_result)
+
+    def _check_startup_result(self):
+        self.toggle_btn.config(state="normal")
+        if self.engine.startup_error:
+            messagebox.showerror(
+                "ReSync Live - Failed to start",
+                f"The session could not be started:\n\n{self.engine.startup_error}",
+            )
+            self.status_label.config(text="Stopped (failed to start)", fg="red")
+            self.engine.stop()
+            self.running = False
+        else:
             self.status_label.config(text="Running", fg="green")
             self.toggle_btn.config(text="Stop Session")
-            self.password_entry.config(state="disabled")
-        self.running = not self.running
+            self.running = True
 
     def _rebuild_guest_rows(self, guests: dict[str, dict]):
         for identity in list(self.guest_rows.keys()):

@@ -21,7 +21,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-CERT_DIR = os.path.join(os.path.dirname(__file__), "certs")
+from paths import persistent_data_dir
+
+CERT_DIR = os.path.join(persistent_data_dir(), "certs")
 CERT_PATH = os.path.join(CERT_DIR, "cert.pem")
 KEY_PATH = os.path.join(CERT_DIR, "key.pem")
 

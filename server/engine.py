@@ -15,12 +15,13 @@ import time
 
 from certs import ensure_certificate
 from config import Config
+from paths import bundled_resource_path
 from signaling.ws_server import serve
 from sfu.room import Room
 
 logger = logging.getLogger("resync_live.engine")
 
-GUEST_PAGE_PATH = os.path.join(os.path.dirname(__file__), "..", "guest-page", "index.html")
+GUEST_PAGE_PATH = bundled_resource_path(os.path.join("guest-page", "index.html"))
 
 
 class ResyncLiveEngine:
@@ -32,10 +33,21 @@ class ResyncLiveEngine:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._server_task: asyncio.Task | None = None
+        # Set if startup fails - checked by the GUI shortly after
+        # calling start(), since start() itself only spawns a thread
+        # and returns immediately with no way to know yet if the
+        # server actually came up. A real bug found the hard way: a
+        # failure inside the server task (e.g. the port already in
+        # use) doesn't propagate anywhere by default - asyncio just
+        # logs "exception was never retrieved" and the loop keeps
+        # running, doing nothing, with no visible sign anything is
+        # wrong. This attribute exists specifically to close that gap.
+        self.startup_error: str | None = None
 
     def start(self):
         if self._thread is not None:
             return  # already running
+        self.startup_error = None
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -95,21 +107,37 @@ class ResyncLiveEngine:
             logger.exception("Could not read guest page at %s", GUEST_PAGE_PATH)
             guest_page_html = ""
 
-        # TLS is required, not optional: browsers only allow camera/mic
-        # access (getUserMedia) in a secure context, and guests connect
-        # over a plain public IP, not localhost - see certs.py.
-        cert_path, key_path = ensure_certificate()
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ssl_context.load_cert_chain(cert_path, key_path)
+        def _on_server_task_done(task: asyncio.Task):
+            # Catches failures INSIDE the server coroutine itself (e.g.
+            # the port is already in use) - these do NOT propagate to
+            # the run_forever() try/except below on their own; asyncio
+            # just logs "exception was never retrieved" and silently
+            # keeps the loop running with a dead task. This is the fix
+            # for exactly that silent-failure mode.
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.exception("Server task failed", exc_info=exc)
+                self.startup_error = f"{type(exc).__name__}: {exc}"
 
         try:
+            # TLS is required, not optional: browsers only allow camera/mic
+            # access (getUserMedia) in a secure context, and guests connect
+            # over a plain public IP, not localhost - see certs.py.
+            cert_path, key_path = ensure_certificate()
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(cert_path, key_path)
+
             self._server_task = self._loop.create_task(
                 serve(self.host, self.port, on_connection,
                       static_html=guest_page_html, ssl_context=ssl_context)
             )
+            self._server_task.add_done_callback(_on_server_task_done)
             self._loop.run_forever()
-        except Exception:
+        except Exception as e:
             logger.exception("Engine loop exited")
+            self.startup_error = f"{type(e).__name__}: {e}"
 
     def stop(self):
         if self._loop is not None:
