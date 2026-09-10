@@ -206,6 +206,24 @@
             renderTrack(mid, trackEvent);
           };
 
+          // The REAL signal of whether media is actually flowing is
+          // connectionState, not "we finished exchanging an offer/
+          // answer" - those are different things in WebRTC, and
+          // conflating them was a real bug: it could show "Connected"
+          // even if the underlying media connection then failed.
+          pc.onconnectionstatechange = () => {
+            console.log("connectionState:", pc.connectionState);
+            if (pc.connectionState === "connected") {
+              statusEl.textContent = "Connected as " + displayName;
+            } else if (pc.connectionState === "connecting") {
+              statusEl.textContent = "Establishing media connection...";
+            } else if (pc.connectionState === "failed") {
+              statusEl.textContent = "Media connection FAILED - signaling worked but the actual audio/video link did not.";
+            } else if (pc.connectionState === "disconnected") {
+              statusEl.textContent = "Media connection disconnected.";
+            }
+          };
+
           statusEl.textContent = "Connecting...";
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
@@ -216,7 +234,7 @@
 
         } else if (msg.type === "answer") {
           await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
-          statusEl.textContent = "Connected as " + displayName;
+          statusEl.textContent = "Signaling done, waiting for media connection...";
 
         } else if (msg.type === "offer") {
           await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
